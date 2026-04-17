@@ -110,7 +110,7 @@ class Sprite:
         if index is None:
             self._layers.append(layer)
         else:
-            self._layers.insert(index, self._clamp_layer_index(index))
+            self._layers.insert(self._clamp_layer_index(index), layer)
         # Blank transparent cels for all existing frames.
         layer_idx = self._layers.index(layer)
         for frame_idx in range(len(self._frames)):

@@ -1,0 +1,5 @@
+DEVELOPMENT_PLAN.md
+.github/copilot-instructions.md
+__pycache__/
+*.pyc
+*.pyo

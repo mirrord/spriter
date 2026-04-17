@@ -72,6 +72,17 @@ class CanvasWidget(QWidget):
         self.onion_after: int = 0  # frames to show after active
         self.onion_opacity: float = 0.3  # base opacity for ghost frames
 
+        # Symmetry / mirror drawing mode.
+        self.symmetry_h: bool = False  # mirror horizontally (left ↔ right)
+        self.symmetry_v: bool = False  # mirror vertically   (top ↔ bottom)
+
+        # Reference image overlay.
+        self.reference_image: Optional[np.ndarray] = None  # RGBA H×W×4
+        self.reference_opacity: float = 0.5
+
+        # Tiling preview — renders the canvas in a 3×3 tile grid.
+        self.tiling_preview: bool = False
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(64, 64)
@@ -212,6 +223,9 @@ class CanvasWidget(QWidget):
         # Onion-skin overlays (previous / next frames).
         self._paint_onion_skin(painter, offset, scaled_w, scaled_h)
 
+        # Reference image overlay.
+        self._paint_reference_image(painter, offset, scaled_w, scaled_h)
+
         # Tool preview overlay.
         if self._tool is not None:
             overlay = self._tool.preview_overlay()
@@ -229,6 +243,10 @@ class CanvasWidget(QWidget):
                 painter.setOpacity(0.75)
                 painter.drawImage(offset, scaled_ov)
                 painter.setOpacity(1.0)
+
+        # Tiling preview — 3×3 repeated copies surrounding the main canvas.
+        if self.tiling_preview:
+            self._paint_tiling_preview(painter, offset, scaled_w, scaled_h)
 
         painter.end()
 
@@ -345,6 +363,9 @@ class CanvasWidget(QWidget):
                 self._tool.layer_index = self._active_layer
                 self._tool.frame_index = self._active_frame
                 self._tool.on_press(cx, cy)
+                for mx, my in self._mirror_point(cx, cy)[1:]:
+                    if 0 <= mx < self._sprite.width and 0 <= my < self._sprite.height:
+                        self._tool.on_press(mx, my)
                 self.invalidate_cache()
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
@@ -360,6 +381,9 @@ class CanvasWidget(QWidget):
             self.update()
         elif (event.buttons() & Qt.MouseButton.LeftButton) and self._tool is not None:
             self._tool.on_drag(cx, cy)
+            for mx, my in self._mirror_point(cx, cy)[1:]:
+                if 0 <= mx < self._sprite.width and 0 <= my < self._sprite.height:
+                    self._tool.on_drag(mx, my)
             self.invalidate_cache()
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
@@ -398,3 +422,83 @@ class CanvasWidget(QWidget):
             self.unsetCursor()
         else:
             super().keyReleaseEvent(event)
+
+    # ------------------------------------------------------------------
+    # Symmetry helper
+    # ------------------------------------------------------------------
+
+    def _mirror_point(self, cx: int, cy: int):
+        """Return extra canvas positions to paint at for the active symmetry axes.
+
+        Returns a list that always contains ``(cx, cy)`` plus any mirrored
+        positions.  Callers should paint at every returned coordinate.
+        """
+        points = [(cx, cy)]
+        mw = self._sprite.width - 1
+        mh = self._sprite.height - 1
+        if self.symmetry_h:
+            points.append((mw - cx, cy))
+        if self.symmetry_v:
+            points.append((cx, mh - cy))
+        if self.symmetry_h and self.symmetry_v:
+            points.append((mw - cx, mh - cy))
+        return points
+
+    # ------------------------------------------------------------------
+    # Phase 8 paint helpers
+    # ------------------------------------------------------------------
+
+    def _paint_reference_image(
+        self,
+        painter: QPainter,
+        offset: QPointF,
+        scaled_w: int,
+        scaled_h: int,
+    ) -> None:
+        """Draw the reference overlay image at the configured opacity."""
+        if self.reference_image is None:
+            return
+        ref = self.reference_image
+        rh, rw = ref.shape[:2]
+        ref_arr = np.ascontiguousarray(ref)
+        ref_qi = QImage(ref_arr.data, rw, rh, rw * 4, QImage.Format.Format_RGBA8888)
+        # Scale reference to match the canvas display size.
+        scaled_ref = ref_qi.scaled(
+            scaled_w,
+            scaled_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        painter.setOpacity(self.reference_opacity)
+        painter.drawImage(offset, scaled_ref)
+        painter.setOpacity(1.0)
+
+    def _paint_tiling_preview(
+        self,
+        painter: QPainter,
+        offset: QPointF,
+        scaled_w: int,
+        scaled_h: int,
+    ) -> None:
+        """Draw 8 surrounding tile copies of the current frame."""
+        composite = self._get_composite()
+        h, w = composite.shape[:2]
+        arr = np.ascontiguousarray(composite)
+        image = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
+        tile = image.scaled(
+            scaled_w,
+            scaled_h,
+            Qt.AspectRatioMode.IgnoreAspectRatio,
+            Qt.TransformationMode.FastTransformation,
+        )
+        painter.setOpacity(0.5)
+        for dr in (-1, 0, 1):
+            for dc in (-1, 0, 1):
+                if dr == 0 and dc == 0:
+                    continue  # skip centre — already painted
+                tile_offset = QPointF(
+                    offset.x() + dc * scaled_w,
+                    offset.y() + dr * scaled_h,
+                )
+                painter.drawImage(tile_offset, tile)
+        painter.setOpacity(1.0)

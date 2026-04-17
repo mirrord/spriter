@@ -19,9 +19,9 @@ the stack, and every command push invalidates the canvas cache.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
     QDockWidget,
@@ -29,6 +29,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QStatusBar,
     QWidget,
@@ -47,9 +48,13 @@ from ..commands.layer_ops import (
     MergeLayerDownCommand,
     RemoveLayerCommand,
 )
+from ..core.settings import Settings
 from ..core.sprite import Sprite
+from ..io.gif_io import export_gif
+from ..io.png_io import export_all_frames, export_frame, import_png
 from ..io.project_io import load as load_project
 from ..io.project_io import save as save_project
+from ..io.spritesheet import SheetLayout, export_atlas, export_sheet, import_sheet
 from ..tools.ellipse import EllipseTool
 from ..tools.eraser import EraserTool
 from ..tools.eyedropper import EyedropperTool
@@ -74,6 +79,7 @@ from ..core.animation import LoopMode
 from .canvas import CanvasWidget
 from .color_picker import ColorPicker
 from .layers_panel import LayersPanel
+from .preferences import PreferencesDialog
 from .preview import PreviewWindow
 from .timeline import TimelinePanel
 from .toolbar import ToolBar
@@ -94,9 +100,15 @@ class MainWindow(QMainWindow):
         self.resize(1200, 800)
 
         self._sprite: Optional[Sprite] = None
-        self._stack = CommandStack(max_depth=100)
+        self._settings: Settings = Settings.load()
+        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
         self._current_path: Optional[Path] = None
         self._unsaved = False
+
+        # Autosave timer
+        self._autosave_timer = QTimer(self)
+        self._autosave_timer.timeout.connect(self._do_autosave)
+        self._reset_autosave_timer()
 
         # Widgets (created after the sprite is set up)
         self._canvas: Optional[CanvasWidget] = None
@@ -113,8 +125,14 @@ class MainWindow(QMainWindow):
         self._status_tool = QLabel("pencil")
         self._init_status_bar()
 
+        # Accept file drops.
+        self.setAcceptDrops(True)
+
         # Build the default project and UI.
-        self.new_project(32, 32)
+        self.new_project(
+            self._settings.default_canvas_width,
+            self._settings.default_canvas_height,
+        )
         self._build_menus()
         self._build_shortcuts()
 
@@ -198,10 +216,30 @@ class MainWindow(QMainWindow):
             self._current_path = path
             self._unsaved = False
             self.setWindowTitle(f"Spriter — {path.name}")
+            self._settings.add_recent_file(str(path))
+            self._settings.save()
+            self._refresh_recent_menu()
             return True
         except Exception as exc:
             QMessageBox.critical(self, "Save Error", f"Could not save:\n{exc}")
             return False
+
+    def _do_autosave(self) -> None:
+        """Write an autosave copy if the project is dirty and has a path."""
+        if self._unsaved and self._current_path and self._sprite:
+            try:
+                from ..io.project_io import autosave as _autosave
+
+                _autosave(self._sprite, self._current_path)
+            except Exception:
+                pass
+
+    def _reset_autosave_timer(self) -> None:
+        interval = self._settings.autosave_interval_ms
+        if interval > 0:
+            self._autosave_timer.start(interval)
+        else:
+            self._autosave_timer.stop()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -273,6 +311,36 @@ class MainWindow(QMainWindow):
         file_menu.addSeparator()
         self._add_action(file_menu, "&Save", self.save_project, "Ctrl+S")
         self._add_action(file_menu, "Save &As…", self.save_as_project, "Ctrl+Shift+S")
+        file_menu.addSeparator()
+        # Export sub-menu
+        export_menu = QMenu("&Export", self)
+        self._add_action(export_menu, "Export Frame as &PNG…", self._export_frame_png)
+        self._add_action(
+            export_menu, "Export All Frames as PNG…", self._export_all_frames_png
+        )
+        self._add_action(export_menu, "Export Animated &GIF…", self._export_gif)
+        export_menu.addSeparator()
+        self._add_action(export_menu, "Export Sprite &Sheet…", self._export_sheet)
+        self._add_action(export_menu, "Export Sheet + &Atlas…", self._export_atlas)
+        export_menu.addSeparator()
+        self._add_action(export_menu, "Export as &ICO…", self._export_ico)
+        file_menu.addMenu(export_menu)
+        # Import sub-menu
+        import_menu = QMenu("&Import", self)
+        self._add_action(import_menu, "Import &PNG as Sprite…", self._import_png)
+        self._add_action(import_menu, "Import Sprite &Sheet…", self._import_sheet)
+        file_menu.addMenu(import_menu)
+        file_menu.addSeparator()
+        # Copy / Paste
+        self._add_action(file_menu, "&Copy Selection", self._copy_selection, "Ctrl+C")
+        self._add_action(
+            file_menu, "&Paste from Clipboard", self._paste_clipboard, "Ctrl+V"
+        )
+        file_menu.addSeparator()
+        # Recent files
+        self._recent_menu = QMenu("&Recent Files", self)
+        file_menu.addMenu(self._recent_menu)
+        self._refresh_recent_menu()
         file_menu.addSeparator()
         self._add_action(file_menu, "E&xit", self.close, "Ctrl+Q")
 
@@ -351,7 +419,28 @@ class MainWindow(QMainWindow):
             xform_menu, "&Brightness / Contrast…", self._prompt_adjust_brightness
         )
         self._add_action(xform_menu, "H&ue / Saturation…", self._prompt_adjust_hue)
+        # ── View additions (Phase 8) ───────────────────────────────────
+        view_menu.addSeparator()
+        self._sym_h_action = self._add_action(
+            view_menu, "Symmetry: &Horizontal", self._toggle_sym_h, checkable=True
+        )
+        self._sym_v_action = self._add_action(
+            view_menu, "Symmetry: &Vertical", self._toggle_sym_v, checkable=True
+        )
+        view_menu.addSeparator()
+        self._tiling_action = self._add_action(
+            view_menu, "&Tiling Preview", self._toggle_tiling, checkable=True
+        )
+        self._add_action(
+            view_menu, "Set &Reference Image\u2026", self._set_reference_image
+        )
+        self._add_action(
+            view_menu, "Clear Reference Image", self._clear_reference_image
+        )
 
+        # ── Preferences ───────────────────────────────────────────────
+        prefs_menu = mb.addMenu("&Preferences")
+        self._add_action(prefs_menu, "&Preferences\u2026", self._open_preferences)
         # ── Help ──────────────────────────────────────────────────────
         help_menu = mb.addMenu("&Help")
         self._add_action(help_menu, "&About…", self._show_about)
@@ -373,19 +462,9 @@ class MainWindow(QMainWindow):
         return action
 
     def _build_shortcuts(self) -> None:
-        """Additional canvas-level keyboard shortcuts."""
-        shortcuts = {
-            "B": "pencil",
-            "E": "eraser",
-            "L": "line",
-            "R": "rectangle",
-            "O": "ellipse",
-            "G": "fill",
-            "I": "eyedropper",
-            "S": "select",
-            "M": "move",
-            "T": "text",
-        }
+        """Additional canvas-level keyboard shortcuts (respects keybinding settings)."""
+        # Build key→tool map from settings keybindings (inverted).
+        shortcuts = {v: k for k, v in self._settings.keybindings.items()}
         from PyQt6.QtGui import QShortcut
 
         for key, tool_name in shortcuts.items():
@@ -714,8 +793,336 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Spriter",
-            "Spriter — Pixel art editor\n\nPhases 1-6 implemented.",
+            "Spriter \u2014 Pixel art editor\n\nPhases 1-8 implemented.",
         )
+
+    # ------------------------------------------------------------------
+    # Phase 7: Export actions
+    # ------------------------------------------------------------------
+
+    def _export_frame_png(self) -> None:
+        if self._sprite is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Frame as PNG", "", "PNG Images (*.png)"
+        )
+        if not path:
+            return
+        fi = self._canvas.active_frame if self._canvas else 0
+        try:
+            export_frame(self._sprite, fi, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _export_all_frames_png(self) -> None:
+        if self._sprite is None:
+            return
+        dir_path = QFileDialog.getExistingDirectory(
+            self, "Export All Frames — Choose Folder"
+        )
+        if not dir_path:
+            return
+        try:
+            export_all_frames(self._sprite, dir_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _export_gif(self) -> None:
+        if self._sprite is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Animated GIF", "", "GIF Images (*.gif)"
+        )
+        if not path:
+            return
+        try:
+            export_gif(self._sprite, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _export_sheet(self) -> None:
+        if self._sprite is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export Sprite Sheet", "", "PNG Images (*.png)"
+        )
+        if not path:
+            return
+        try:
+            export_sheet(self._sprite, path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _export_atlas(self) -> None:
+        if self._sprite is None:
+            return
+        sheet_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Sprite Sheet (image)", "", "PNG Images (*.png)"
+        )
+        if not sheet_path:
+            return
+        atlas_path, _ = QFileDialog.getSaveFileName(
+            self, "Export Atlas (JSON)", "", "JSON files (*.json)"
+        )
+        if not atlas_path:
+            return
+        try:
+            export_atlas(self._sprite, sheet_path, atlas_path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    def _export_ico(self) -> None:
+        if self._sprite is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Export as ICO", "", "Icon files (*.ico)"
+        )
+        if not path:
+            return
+        fi = self._canvas.active_frame if self._canvas else 0
+        try:
+            from ..core.compositor import composite_frame
+            from PIL import Image
+            import numpy as np
+
+            composite = composite_frame(self._sprite, fi)
+            img = Image.fromarray(composite, mode="RGBA")
+            img.save(path, format="ICO")
+        except Exception as exc:
+            QMessageBox.critical(self, "Export Error", str(exc))
+
+    # ------------------------------------------------------------------
+    # Phase 7: Import actions
+    # ------------------------------------------------------------------
+
+    def _import_png(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import PNG as Sprite", "", "Images (*.png *.bmp *.jpg *.jpeg *.webp)"
+        )
+        if not path:
+            return
+        try:
+            sprite = import_png(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Error", str(exc))
+            return
+        self._sprite = sprite
+        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+        self._current_path = None
+        self._unsaved = True
+        self._rebuild_ui()
+        w, h = sprite.width, sprite.height
+        self._status_canvas.setText(f"{w}\u00d7{h}")
+        self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
+
+    def _import_sheet(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import Sprite Sheet", "", "Images (*.png *.bmp *.jpg *.jpeg)"
+        )
+        if not path:
+            return
+        fw, ok1 = QInputDialog.getInt(
+            self, "Import Sheet", "Frame width (px):", 16, 1, 4096
+        )
+        if not ok1:
+            return
+        fh, ok2 = QInputDialog.getInt(
+            self, "Import Sheet", "Frame height (px):", 16, 1, 4096
+        )
+        if not ok2:
+            return
+        pad, ok3 = QInputDialog.getInt(self, "Import Sheet", "Padding (px):", 0, 0, 64)
+        if not ok3:
+            return
+        try:
+            sprite = import_sheet(path, fw, fh, padding=pad)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Error", str(exc))
+            return
+        self._sprite = sprite
+        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+        self._current_path = None
+        self._unsaved = True
+        self._rebuild_ui()
+        w, h = sprite.width, sprite.height
+        self._status_canvas.setText(f"{w}\u00d7{h}")
+
+    # ------------------------------------------------------------------
+    # Phase 7: Copy / Paste
+    # ------------------------------------------------------------------
+
+    def _copy_selection(self) -> None:
+        """Copy the active cel (or selection) to the clipboard as a PNG image."""
+        if self._sprite is None:
+            return
+        from PyQt6.QtGui import QClipboard, QImage
+        from PyQt6.QtWidgets import QApplication
+        from ..core.compositor import composite_frame
+        import numpy as np
+        from io import BytesIO
+        from PIL import Image
+
+        fi = self._canvas.active_frame if self._canvas else 0
+        composite = composite_frame(self._sprite, fi)
+
+        if self._sprite.selection_mask is not None:
+            # Zero out pixels outside the selection for copy.
+            masked = composite.copy()
+            masked[~self._sprite.selection_mask] = 0
+            composite = masked
+
+        h, w = composite.shape[:2]
+        arr = np.ascontiguousarray(composite)
+        qi = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
+        QApplication.clipboard().setImage(qi)
+
+    def _paste_clipboard(self) -> None:
+        """Paste clipboard image onto the active layer / frame."""
+        if self._sprite is None:
+            return
+        from PyQt6.QtWidgets import QApplication
+        import numpy as np
+
+        qi = QApplication.clipboard().image()
+        if qi.isNull():
+            return
+        # Convert QImage to numpy RGBA.
+        qi = qi.convertToFormat(qi.Format.Format_RGBA8888)
+        w, h = qi.width(), qi.height()
+        ptr = qi.bits()
+        ptr.setsize(h * w * 4)
+        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4)).copy()
+
+        # Resize to canvas size if needed.
+        if w != self._sprite.width or h != self._sprite.height:
+            from PIL import Image
+
+            img = Image.fromarray(arr, mode="RGBA")
+            img = img.resize(
+                (self._sprite.width, self._sprite.height), Image.Resampling.NEAREST
+            )
+            arr = np.array(img, dtype=np.uint8)
+
+        li = self._layers_panel.active_layer if self._layers_panel else 0
+        fi = self._canvas.active_frame if self._canvas else 0
+        self._sprite.set_cel_pixels(li, fi, arr)
+        if self._canvas:
+            self._canvas.invalidate_cache()
+        self._unsaved = True
+
+    # ------------------------------------------------------------------
+    # Phase 8: Recent files
+    # ------------------------------------------------------------------
+
+    def _refresh_recent_menu(self) -> None:
+        """Rebuild the Recent Files sub-menu from current settings."""
+        if not hasattr(self, "_recent_menu"):
+            return
+        self._recent_menu.clear()
+        recent = self._settings.recent_files
+        if not recent:
+            action = QAction("(No recent files)", self)
+            action.setEnabled(False)
+            self._recent_menu.addAction(action)
+            return
+        for file_path in recent:
+            action = QAction(file_path, self)
+            action.triggered.connect(
+                lambda checked=False, p=file_path: self.open_project(p)
+            )
+            self._recent_menu.addAction(action)
+
+    # ------------------------------------------------------------------
+    # Phase 8: Drag-and-drop
+    # ------------------------------------------------------------------
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        url: QUrl = urls[0]
+        path = url.toLocalFile()
+        if path.lower().endswith(".spriter"):
+            self.open_project(path)
+        else:
+            # Try importing as a PNG/image.
+            try:
+                sprite = import_png(path)
+            except Exception as exc:
+                QMessageBox.critical(self, "Drop Error", str(exc))
+                return
+            self._sprite = sprite
+            self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+            self._current_path = None
+            self._unsaved = True
+            self._rebuild_ui()
+            w, h = sprite.width, sprite.height
+            self._status_canvas.setText(f"{w}\u00d7{h}")
+            self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
+
+    # ------------------------------------------------------------------
+    # Phase 8: Symmetry mode
+    # ------------------------------------------------------------------
+
+    def _toggle_sym_h(self) -> None:
+        if self._canvas:
+            self._canvas.symmetry_h = self._sym_h_action.isChecked()
+
+    def _toggle_sym_v(self) -> None:
+        if self._canvas:
+            self._canvas.symmetry_v = self._sym_v_action.isChecked()
+
+    # ------------------------------------------------------------------
+    # Phase 8: Tiling preview
+    # ------------------------------------------------------------------
+
+    def _toggle_tiling(self) -> None:
+        if self._canvas:
+            self._canvas.tiling_preview = self._tiling_action.isChecked()
+            self._canvas.update()
+
+    # ------------------------------------------------------------------
+    # Phase 8: Reference image
+    # ------------------------------------------------------------------
+
+    def _set_reference_image(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Open Reference Image", "", "Images (*.png *.bmp *.jpg *.jpeg)"
+        )
+        if not path or self._canvas is None:
+            return
+        try:
+            import numpy as np
+            from PIL import Image
+
+            img = Image.open(path).convert("RGBA")
+            self._canvas.reference_image = np.array(img, dtype=np.uint8)
+            self._canvas.update()
+        except Exception as exc:
+            QMessageBox.critical(self, "Reference Image Error", str(exc))
+
+    def _clear_reference_image(self) -> None:
+        if self._canvas:
+            self._canvas.reference_image = None
+            self._canvas.update()
+
+    # ------------------------------------------------------------------
+    # Phase 8: Preferences dialog
+    # ------------------------------------------------------------------
+
+    def _open_preferences(self) -> None:
+        dlg = PreferencesDialog(self._settings, self)
+        if dlg.exec():
+            self._settings.save()
+            self._reset_autosave_timer()
+            # Re-apply shortcut bindings.
+            self._build_shortcuts()
 
     # ------------------------------------------------------------------
     # Tool factory

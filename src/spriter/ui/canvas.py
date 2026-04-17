@@ -67,6 +67,11 @@ class CanvasWidget(QWidget):
 
         self.show_grid: bool = True
 
+        # Onion skinning — show N previous / next frames as translucent overlays.
+        self.onion_before: int = 0  # frames to show before active
+        self.onion_after: int = 0  # frames to show after active
+        self.onion_opacity: float = 0.3  # base opacity for ghost frames
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(64, 64)
@@ -204,6 +209,9 @@ class CanvasWidget(QWidget):
         if self.show_grid and self._zoom >= 4.0:
             self._paint_grid(painter, offset, w, h)
 
+        # Onion-skin overlays (previous / next frames).
+        self._paint_onion_skin(painter, offset, scaled_w, scaled_h)
+
         # Tool preview overlay.
         if self._tool is not None:
             overlay = self._tool.preview_overlay()
@@ -246,6 +254,40 @@ class CanvasWidget(QWidget):
                 )
                 col += check
             row += check
+
+    def _paint_onion_skin(
+        self, painter: QPainter, offset: QPointF, scaled_w: int, scaled_h: int
+    ) -> None:
+        """Render previous / next frames as translucent ghost overlays."""
+        total = self._sprite.frame_count
+        if total <= 1 or (self.onion_before == 0 and self.onion_after == 0):
+            return
+        from ..core.compositor import composite_frame
+
+        ghosts = []
+        for step in range(1, self.onion_before + 1):
+            fi = self._active_frame - step
+            if 0 <= fi < total:
+                ghosts.append((fi, self.onion_opacity * (1.0 - 0.15 * (step - 1))))
+        for step in range(1, self.onion_after + 1):
+            fi = self._active_frame + step
+            if 0 <= fi < total:
+                ghosts.append((fi, self.onion_opacity * (1.0 - 0.15 * (step - 1))))
+
+        for fi, opacity in ghosts:
+            ghost = composite_frame(self._sprite, fi)
+            arr = np.ascontiguousarray(ghost)
+            gh, gw = arr.shape[:2]
+            gi = QImage(arr.data, gw, gh, gw * 4, QImage.Format.Format_RGBA8888)
+            scaled_gi = gi.scaled(
+                scaled_w,
+                scaled_h,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.FastTransformation,
+            )
+            painter.setOpacity(opacity)
+            painter.drawImage(offset, scaled_gi)
+            painter.setOpacity(1.0)
 
     def _paint_grid(
         self, painter: QPainter, offset: QPointF, cols: int, rows: int

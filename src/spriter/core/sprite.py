@@ -14,6 +14,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .animation import Animation
 from .frame import Cel, Frame
 from .layer import BlendMode, Layer
 
@@ -50,6 +51,7 @@ class Sprite:
         self._frames: List[Frame] = []
         self._cels: Dict[CelKey, Cel] = {}
         self.selection_mask: Optional[np.ndarray] = None  # bool (H, W) or None
+        self.animation: Animation = Animation()
 
     # ------------------------------------------------------------------
     # Properties
@@ -363,6 +365,101 @@ class Sprite:
     def clear_selection(self) -> None:
         """Remove the active selection (all pixels become editable)."""
         self.selection_mask = None
+
+    # ------------------------------------------------------------------
+    # Canvas / sprite resize
+    # ------------------------------------------------------------------
+
+    def resize_canvas(
+        self,
+        new_width: int,
+        new_height: int,
+        offset_x: int = 0,
+        offset_y: int = 0,
+    ) -> None:
+        """Resize the canvas, placing existing content at (*offset_x*, *offset_y*).
+
+        Pixels outside the new canvas bounds are discarded.  New regions are
+        filled with transparent pixels.
+
+        Args:
+            new_width: New canvas width in pixels.
+            new_height: New canvas height in pixels.
+            offset_x: X position where existing content is placed in the new canvas.
+            offset_y: Y position where existing content is placed in the new canvas.
+        """
+        if new_width <= 0 or new_height <= 0:
+            raise ValueError(
+                f"Canvas size must be positive, got {new_width}x{new_height}"
+            )
+        old_w, old_h = self.width, self.height
+        new_cels: Dict[CelKey, Cel] = {}
+        for key, cel in self._cels.items():
+            if cel.pixels is None:
+                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+            else:
+                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+                # Region of old pixels that lands in the new canvas.
+                src_x1 = max(0, -offset_x)
+                src_y1 = max(0, -offset_y)
+                src_x2 = min(old_w, new_width - offset_x)
+                src_y2 = min(old_h, new_height - offset_y)
+                dst_x1 = src_x1 + offset_x
+                dst_y1 = src_y1 + offset_y
+                dst_x2 = src_x2 + offset_x
+                dst_y2 = src_y2 + offset_y
+                if src_x2 > src_x1 and src_y2 > src_y1:
+                    new_buf[dst_y1:dst_y2, dst_x1:dst_x2] = cel.pixels[
+                        src_y1:src_y2, src_x1:src_x2
+                    ]
+            new_cels[key] = Cel(new_buf)
+        self._cels = new_cels
+        self.width = new_width
+        self.height = new_height
+
+    def scale_pixels(
+        self,
+        new_width: int,
+        new_height: int,
+        *,
+        method: str = "nearest",
+    ) -> None:
+        """Scale all cel pixel buffers to *new_width* × *new_height*.
+
+        Also updates ``self.width`` and ``self.height``.
+
+        Args:
+            new_width: Target width in pixels.
+            new_height: Target height in pixels.
+            method: Resampling filter — ``"nearest"`` (default, good for pixel
+                art) or ``"bilinear"``.
+
+        Raises:
+            ValueError: If dimensions are not positive.
+        """
+        if new_width <= 0 or new_height <= 0:
+            raise ValueError(
+                f"Canvas size must be positive, got {new_width}x{new_height}"
+            )
+        from PIL import Image as _PILImage
+
+        resample = (
+            _PILImage.Resampling.NEAREST
+            if method == "nearest"
+            else _PILImage.Resampling.BILINEAR
+        )
+        new_cels: Dict[CelKey, Cel] = {}
+        for key, cel in self._cels.items():
+            if cel.pixels is None:
+                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+            else:
+                pil_img = _PILImage.fromarray(cel.pixels, mode="RGBA")
+                pil_img = pil_img.resize((new_width, new_height), resample)
+                new_buf = np.array(pil_img, dtype=np.uint8)
+            new_cels[key] = Cel(new_buf)
+        self._cels = new_cels
+        self.width = new_width
+        self.height = new_height
 
     def __repr__(self) -> str:
         return (

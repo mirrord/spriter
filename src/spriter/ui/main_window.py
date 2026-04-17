@@ -60,9 +60,22 @@ from ..tools.pencil import PencilTool
 from ..tools.rectangle import RectangleTool
 from ..tools.select import RectSelectTool
 from ..tools.text import TextTool
+from ..commands.transform import (
+    AdjustmentCommand,
+    CanvasResizeCommand,
+    FlipCommand,
+    OutlineCommand,
+    ReplaceColorCommand,
+    RotateCommand,
+    ScaleCommand,
+    ShiftCommand,
+)
+from ..core.animation import LoopMode
 from .canvas import CanvasWidget
 from .color_picker import ColorPicker
 from .layers_panel import LayersPanel
+from .preview import PreviewWindow
+from .timeline import TimelinePanel
 from .toolbar import ToolBar
 
 
@@ -90,6 +103,8 @@ class MainWindow(QMainWindow):
         self._toolbar: Optional[ToolBar] = None
         self._color_picker: Optional[ColorPicker] = None
         self._layers_panel: Optional[LayersPanel] = None
+        self._timeline: Optional[TimelinePanel] = None
+        self._preview: Optional[PreviewWindow] = None
 
         # Status-bar labels
         self._status_cursor = QLabel("0, 0")
@@ -120,6 +135,7 @@ class MainWindow(QMainWindow):
         self._stack = CommandStack(max_depth=100)
         self._current_path = None
         self._unsaved = False
+        self._preview = None  # reset preview on new project
 
         self._rebuild_ui()
         self._status_canvas.setText(f"{width}×{height}")
@@ -233,6 +249,17 @@ class MainWindow(QMainWindow):
         layers_dock.setObjectName("layers_dock")
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, layers_dock)
 
+        # ── Timeline panel (bottom dock) ──────────────────────────────
+        self._timeline = TimelinePanel(self._sprite, self._stack)
+        self._timeline.frame_selected.connect(self._on_timeline_frame_selected)
+        self._timeline.frame_duration_changed.connect(
+            lambda fi, ms: self._canvas.invalidate_cache()
+        )
+        timeline_dock = QDockWidget("Timeline", self)
+        timeline_dock.setWidget(self._timeline)
+        timeline_dock.setObjectName("timeline_dock")
+        self.addDockWidget(Qt.DockWidgetArea.BottomDockWidgetArea, timeline_dock)
+
         # Select the pencil tool on startup.
         self._on_tool_changed("pencil")
 
@@ -281,6 +308,49 @@ class MainWindow(QMainWindow):
         self._add_action(frame_menu, "&Add Frame", self._add_frame)
         self._add_action(frame_menu, "&Delete Frame", self._delete_frame)
         self._add_action(frame_menu, "D&uplicate Frame", self._duplicate_frame)
+
+        # ── Animation ─────────────────────────────────────────────────
+        anim_menu = mb.addMenu("&Animation")
+        self._add_action(anim_menu, "&Preview…", self._show_preview)
+        anim_menu.addSeparator()
+        self._add_action(
+            anim_menu, "Loop Mode: &Loop", lambda: self._set_loop_mode(LoopMode.LOOP)
+        )
+        self._add_action(
+            anim_menu,
+            "Loop Mode: &Ping-Pong",
+            lambda: self._set_loop_mode(LoopMode.PING_PONG),
+        )
+        self._add_action(
+            anim_menu,
+            "Loop Mode: &One-Shot",
+            lambda: self._set_loop_mode(LoopMode.ONE_SHOT),
+        )
+        anim_menu.addSeparator()
+        self._onion_action = self._add_action(
+            anim_menu, "&Onion Skinning", self._toggle_onion_skin, checkable=True
+        )
+
+        # ── Transform ─────────────────────────────────────────────────
+        xform_menu = mb.addMenu("&Transform")
+        self._add_action(xform_menu, "Flip &Horizontal", self._flip_h)
+        self._add_action(xform_menu, "Flip &Vertical", self._flip_v)
+        xform_menu.addSeparator()
+        self._add_action(xform_menu, "Rotate &90° CW", lambda: self._rotate(90))
+        self._add_action(xform_menu, "Rotate 90° &CCW", lambda: self._rotate(-90))
+        self._add_action(xform_menu, "Rotate &180°", lambda: self._rotate(180))
+        xform_menu.addSeparator()
+        self._add_action(xform_menu, "&Canvas Size…", self._prompt_canvas_resize)
+        self._add_action(xform_menu, "&Scale Image…", self._prompt_scale)
+        xform_menu.addSeparator()
+        self._add_action(xform_menu, "Shift / &Offset…", self._prompt_shift)
+        self._add_action(xform_menu, "&Outline", self._apply_outline)
+        self._add_action(xform_menu, "Replace &Color…", self._prompt_replace_color)
+        xform_menu.addSeparator()
+        self._add_action(
+            xform_menu, "&Brightness / Contrast…", self._prompt_adjust_brightness
+        )
+        self._add_action(xform_menu, "H&ue / Saturation…", self._prompt_adjust_hue)
 
         # ── Help ──────────────────────────────────────────────────────
         help_menu = mb.addMenu("&Help")
@@ -381,6 +451,8 @@ class MainWindow(QMainWindow):
     def _on_layers_modified(self) -> None:
         if self._canvas:
             self._canvas.invalidate_cache()
+        if self._timeline:
+            self._timeline.refresh()
         self._unsaved = True
 
     # ------------------------------------------------------------------
@@ -480,11 +552,169 @@ class MainWindow(QMainWindow):
             self._canvas.active_frame = fi + 1
             self._canvas.invalidate_cache()
 
+    def _on_timeline_frame_selected(self, frame_index: int) -> None:
+        if self._canvas:
+            self._canvas.active_frame = frame_index
+            self._canvas.invalidate_cache()
+            if self._canvas._tool:
+                self._canvas._tool.frame_index = frame_index
+
+    # ------------------------------------------------------------------
+    # Animation menu actions
+    # ------------------------------------------------------------------
+
+    def _show_preview(self) -> None:
+        if self._sprite is None:
+            return
+        if self._preview is None:
+            self._preview = PreviewWindow(self._sprite, self)
+        else:
+            self._preview.set_sprite(self._sprite)
+        self._preview.show()
+        self._preview.raise_()
+
+    def _set_loop_mode(self, mode: LoopMode) -> None:
+        if self._sprite:
+            self._sprite.animation.loop_mode = mode
+
+    def _toggle_onion_skin(self) -> None:
+        if self._canvas is None:
+            return
+        enabled = self._onion_action.isChecked()
+        self._canvas.onion_before = 1 if enabled else 0
+        self._canvas.onion_after = 1 if enabled else 0
+        self._canvas.invalidate_cache()
+
+    # ------------------------------------------------------------------
+    # Transform menu actions
+    # ------------------------------------------------------------------
+
+    def _active_layer_frame(self):
+        li = self._layers_panel.active_layer if self._layers_panel else 0
+        fi = self._canvas.active_frame if self._canvas else 0
+        return li, fi
+
+    def _push_transform(self, cmd) -> None:
+        self._stack.push(cmd)
+        if self._canvas:
+            self._canvas.invalidate_cache()
+        self._unsaved = True
+
+    def _flip_h(self) -> None:
+        if self._sprite is None:
+            return
+        li, fi = self._active_layer_frame()
+        self._push_transform(FlipCommand(self._sprite, li, fi, horizontal=True))
+
+    def _flip_v(self) -> None:
+        if self._sprite is None:
+            return
+        li, fi = self._active_layer_frame()
+        self._push_transform(FlipCommand(self._sprite, li, fi, horizontal=False))
+
+    def _rotate(self, angle: float) -> None:
+        if self._sprite is None:
+            return
+        li, fi = self._active_layer_frame()
+        self._push_transform(RotateCommand(self._sprite, li, fi, angle))
+
+    def _prompt_canvas_resize(self) -> None:
+        if self._sprite is None:
+            return
+        w, ok1 = QInputDialog.getInt(
+            self, "Canvas Size", "New width (px):", self._sprite.width, 1, 4096
+        )
+        if not ok1:
+            return
+        h, ok2 = QInputDialog.getInt(
+            self, "Canvas Size", "New height (px):", self._sprite.height, 1, 4096
+        )
+        if ok2:
+            self._push_transform(CanvasResizeCommand(self._sprite, w, h))
+            self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
+
+    def _prompt_scale(self) -> None:
+        if self._sprite is None:
+            return
+        w, ok1 = QInputDialog.getInt(
+            self, "Scale Image", "New width (px):", self._sprite.width, 1, 4096
+        )
+        if not ok1:
+            return
+        h, ok2 = QInputDialog.getInt(
+            self, "Scale Image", "New height (px):", self._sprite.height, 1, 4096
+        )
+        if ok2:
+            self._push_transform(ScaleCommand(self._sprite, w, h))
+            self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
+
+    def _prompt_shift(self) -> None:
+        if self._sprite is None:
+            return
+        dx, ok1 = QInputDialog.getInt(
+            self,
+            "Shift",
+            "Horizontal offset (px):",
+            0,
+            -self._sprite.width,
+            self._sprite.width,
+        )
+        if not ok1:
+            return
+        dy, ok2 = QInputDialog.getInt(
+            self,
+            "Shift",
+            "Vertical offset (px):",
+            0,
+            -self._sprite.height,
+            self._sprite.height,
+        )
+        if ok2:
+            li, fi = self._active_layer_frame()
+            self._push_transform(ShiftCommand(self._sprite, li, fi, dx, dy))
+
+    def _apply_outline(self) -> None:
+        if self._sprite is None:
+            return
+        li, fi = self._active_layer_frame()
+        self._push_transform(OutlineCommand(self._sprite, li, fi))
+
+    def _prompt_replace_color(self) -> None:
+        if self._sprite is None:
+            return
+        QMessageBox.information(
+            self,
+            "Replace Color",
+            "Replace Color is accessible programmatically via ReplaceColorCommand.",
+        )
+
+    def _prompt_adjust_brightness(self) -> None:
+        if self._sprite is None:
+            return
+        val, ok = QInputDialog.getDouble(
+            self, "Brightness", "Brightness factor (1.0 = no change):", 1.0, 0.0, 5.0, 2
+        )
+        if ok:
+            li, fi = self._active_layer_frame()
+            self._push_transform(
+                AdjustmentCommand(self._sprite, li, fi, brightness=val)
+            )
+
+    def _prompt_adjust_hue(self) -> None:
+        if self._sprite is None:
+            return
+        val, ok = QInputDialog.getDouble(
+            self, "Hue / Saturation", "Hue rotation (degrees):", 0.0, -180.0, 180.0, 1
+        )
+        if ok:
+            li, fi = self._active_layer_frame()
+            self._push_transform(AdjustmentCommand(self._sprite, li, fi, hue=val))
+
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
             "About Spriter",
-            "Spriter — Pixel art editor\n\nPhases 1-4 implemented.",
+            "Spriter — Pixel art editor\n\nPhases 1-6 implemented.",
         )
 
     # ------------------------------------------------------------------

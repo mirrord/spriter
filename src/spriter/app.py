@@ -19,13 +19,6 @@ import sys
 
 def main() -> None:
     """Launch the Spriter GUI application."""
-    import os
-
-    # Use offscreen rendering when no display is available (e.g. CI).
-    # The real Windows/macOS/Linux platform plugins take precedence when
-    # QT_QPA_PLATFORM is not set.
-    os.environ.setdefault("QT_QPA_PLATFORM", os.environ.get("QT_QPA_PLATFORM", ""))
-
     from PyQt6.QtWidgets import QApplication
 
     app = QApplication(sys.argv)

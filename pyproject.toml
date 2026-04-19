@@ -15,6 +15,9 @@ authors = [
 ]
 classifiers = [
   "Development Status :: 4 - Beta",
+  "Intended Audience :: End Users/Desktop",
+  "Topic :: Multimedia :: Graphics :: Editors :: Raster-Based",
+  "Environment :: X11 Applications :: Qt",
   "Programming Language :: Python",
   "Programming Language :: Python :: 3.8",
   "Programming Language :: Python :: 3.9",
@@ -22,7 +25,6 @@ classifiers = [
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
   "Programming Language :: Python :: Implementation :: CPython",
-  "Programming Language :: Python :: Implementation :: PyPy",
 ]
 dependencies = [
   "numpy>=1.24",
@@ -47,6 +49,14 @@ extra-dependencies = [
 ]
 [tool.hatch.envs.types.scripts]
 check = "mypy --install-types --non-interactive {args:src/spriter tests}"
+
+[tool.hatch.envs.dist]
+extra-dependencies = [
+  "pyinstaller>=6.0",
+]
+[tool.hatch.envs.dist.scripts]
+build = "pyinstaller spriter.spec --noconfirm"
+build-onefile = "pyinstaller spriter.spec --noconfirm --onefile"
 
 [tool.coverage.run]
 source_pkgs = ["spriter", "tests"]

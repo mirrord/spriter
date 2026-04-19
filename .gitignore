@@ -3,3 +3,5 @@ DEVELOPMENT_PLAN.md
 __pycache__/
 *.pyc
 *.pyo
+dist/
+build/

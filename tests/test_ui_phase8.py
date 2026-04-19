@@ -554,3 +554,35 @@ class TestMainWindowPhase8:
         assert any("/some/fake.spriter" in t for t in texts)
         w._unsaved = False
         w.close()
+
+    def test_undo_add_frame_clamps_canvas_active_frame(self, qapp):
+        """After undoing an AddFrameCommand (which removes the last frame),
+        canvas.active_frame must not exceed the new frame_count - 1.
+
+        Regression: when a 3-frame project had frame 2 active and the user
+        undid the last AddFrameCommand, canvas._active_frame stayed at 2
+        while the sprite shrank to 2 frames.  The next repaint then called
+        composite_frame(sprite, 2) which raised
+        ``IndexError: Frame index 2 out of range (0–1)``.
+        """
+        from spriter.commands.frame_ops import AddFrameCommand
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+        # Build a 3-frame project via command stack (new_project gives 1 frame)
+        w._stack.push(AddFrameCommand(w._sprite))
+        w._stack.push(AddFrameCommand(w._sprite))
+        assert w._sprite.frame_count == 3
+
+        # Simulate the user navigating to the last frame
+        w._canvas.active_frame = 2
+
+        # Undo the most recent AddFrameCommand → sprite drops to 2 frames
+        w._undo()
+
+        # canvas.active_frame must now be within the valid range
+        assert w._sprite.frame_count == 2
+        assert w._canvas.active_frame < w._sprite.frame_count
+
+        w._unsaved = False
+        w.close()

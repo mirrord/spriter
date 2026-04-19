@@ -160,9 +160,8 @@ class CanvasWidget(QWidget):
             if self._sprite.frame_count > 0 and self._sprite.layer_count > 0:
                 from ..core.compositor import composite_frame
 
-                self._composite_cache = composite_frame(
-                    self._sprite, self._active_frame
-                )
+                frame_idx = min(self._active_frame, self._sprite.frame_count - 1)
+                self._composite_cache = composite_frame(self._sprite, frame_idx)
             else:
                 self._composite_cache = np.zeros(
                     (self._sprite.height, self._sprite.width, 4), dtype=np.uint8

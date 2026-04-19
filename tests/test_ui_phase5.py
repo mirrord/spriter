@@ -292,6 +292,20 @@ class TestTimelinePanel:
         assert s.frame_count == 2
         assert len(panel._cells) == 2
 
+    def test_remove_last_frame_of_three(self, qapp):
+        """Deleting the last frame of a 3-frame project must not leave
+        ``_active_frame`` pointing past the end of the frame list."""
+        from spriter.commands.base import CommandStack
+        from spriter.ui.timeline import TimelinePanel
+
+        s = _make_sprite(frames=3)
+        panel = TimelinePanel(s, CommandStack())
+        panel._active_frame = 2  # select the last (empty) frame
+        panel._remove_frame()
+        assert s.frame_count == 2
+        assert panel._active_frame < s.frame_count  # must stay in range
+        assert panel._active_frame == 1
+
     def test_remove_last_frame_shows_warning(self, qapp, monkeypatch):
         from PyQt6.QtWidgets import QMessageBox
 

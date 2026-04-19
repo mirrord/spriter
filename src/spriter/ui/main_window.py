@@ -549,6 +549,9 @@ class MainWindow(QMainWindow):
     def _undo(self) -> None:
         if self._stack.can_undo:
             self._stack.undo()
+            if self._canvas and self._sprite and self._sprite.frame_count > 0:
+                new_fi = min(self._canvas.active_frame, self._sprite.frame_count - 1)
+                self._canvas.active_frame = max(0, new_fi)
             if self._canvas:
                 self._canvas.invalidate_cache()
             if self._layers_panel:
@@ -557,6 +560,9 @@ class MainWindow(QMainWindow):
     def _redo(self) -> None:
         if self._stack.can_redo:
             self._stack.redo()
+            if self._canvas and self._sprite and self._sprite.frame_count > 0:
+                new_fi = min(self._canvas.active_frame, self._sprite.frame_count - 1)
+                self._canvas.active_frame = max(0, new_fi)
             if self._canvas:
                 self._canvas.invalidate_cache()
             if self._layers_panel:
@@ -606,6 +612,8 @@ class MainWindow(QMainWindow):
         self._stack.push(cmd)
         if self._canvas:
             self._canvas.invalidate_cache()
+        if self._timeline:
+            self._timeline.refresh()
 
     def _delete_frame(self) -> None:
         if self._sprite is None or self._sprite.frame_count <= 1:
@@ -616,10 +624,13 @@ class MainWindow(QMainWindow):
         fi = self._canvas.active_frame if self._canvas else 0
         cmd = RemoveFrameCommand(self._sprite, fi)
         self._stack.push(cmd)
+        new_fi = max(0, fi - 1)
         if self._canvas:
-            new_fi = max(0, fi - 1)
             self._canvas.active_frame = new_fi
             self._canvas.invalidate_cache()
+        if self._timeline:
+            self._timeline.set_active_frame(new_fi)
+            self._timeline.refresh()
 
     def _duplicate_frame(self) -> None:
         if self._sprite is None:
@@ -630,6 +641,9 @@ class MainWindow(QMainWindow):
         if self._canvas:
             self._canvas.active_frame = fi + 1
             self._canvas.invalidate_cache()
+        if self._timeline:
+            self._timeline.set_active_frame(fi + 1)
+            self._timeline.refresh()
 
     def _on_timeline_frame_selected(self, frame_index: int) -> None:
         if self._canvas:

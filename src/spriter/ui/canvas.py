@@ -326,12 +326,10 @@ class CanvasWidget(QWidget):
     # ------------------------------------------------------------------
 
     def wheelEvent(self, event: QWheelEvent) -> None:
-        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
-            delta = event.angleDelta().y()
-            if delta > 0:
-                self._zoom_step(1)
-            elif delta < 0:
-                self._zoom_step(-1)
+        delta = event.angleDelta().y()
+        direction = 1 if delta > 0 else -1 if delta < 0 else 0
+        if direction != 0:
+            self._zoom_step_at(direction, QPointF(event.position()))
             event.accept()
         else:
             event.ignore()
@@ -348,6 +346,39 @@ class CanvasWidget(QWidget):
             idx = diffs.index(min(diffs))
         new_idx = max(0, min(len(levels) - 1, idx + direction))
         self.zoom = float(levels[new_idx])
+
+    def _zoom_step_at(self, direction: int, anchor: QPointF) -> None:
+        """Step zoom through ZOOM_LEVELS, keeping *anchor* (widget coords) fixed.
+
+        Args:
+            direction: +1 to zoom in, -1 to zoom out.
+            anchor: Widget-space point that should remain stationary after zoom.
+        """
+        levels = self.ZOOM_LEVELS
+        old_zoom = self._zoom
+        try:
+            idx = levels.index(int(old_zoom))
+        except ValueError:
+            diffs = [abs(lv - old_zoom) for lv in levels]
+            idx = diffs.index(min(diffs))
+        new_idx = max(0, min(len(levels) - 1, idx + direction))
+        new_zoom = float(levels[new_idx])
+        if new_zoom == old_zoom:
+            return
+        # Canvas coordinates of the point under the anchor before zoom.
+        offset = self._canvas_offset()
+        cx = (anchor.x() - offset.x()) / old_zoom
+        cy = (anchor.y() - offset.y()) / old_zoom
+        # Adjust pan so that same canvas point ends up under anchor.
+        cw = self._sprite.width * new_zoom
+        ch = self._sprite.height * new_zoom
+        self._pan = QPointF(
+            anchor.x() - cx * new_zoom - (self.width() - cw) / 2.0,
+            anchor.y() - cy * new_zoom - (self.height() - ch) / 2.0,
+        )
+        self._zoom = new_zoom
+        self.zoom_changed.emit(self._zoom)
+        self.update()
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         is_middle = event.button() == Qt.MouseButton.MiddleButton

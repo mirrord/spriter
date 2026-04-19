@@ -147,6 +147,135 @@ class TestCanvasWidget:
         widget = CanvasWidget(s, CommandStack())
         assert widget.show_grid is True
 
+    def test_scroll_wheel_zooms_in(self, qapp):
+        """Plain scroll-up increases zoom without Ctrl."""
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+        from PyQt6.QtCore import Qt
+
+        from spriter.commands.base import CommandStack
+        from spriter.core.sprite import Sprite
+        from spriter.ui.canvas import CanvasWidget
+
+        s = Sprite(16, 16)
+        s.add_layer()
+        s.add_frame()
+        widget = CanvasWidget(s, CommandStack())
+        widget.resize(200, 200)
+        initial_zoom = widget.zoom
+
+        event = QWheelEvent(
+            QPointF(100, 100),
+            QPointF(100, 100),
+            QPoint(0, 120),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        widget.wheelEvent(event)
+        assert widget.zoom > initial_zoom
+
+    def test_scroll_wheel_zooms_out(self, qapp):
+        """Plain scroll-down decreases zoom."""
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+        from PyQt6.QtCore import Qt
+
+        from spriter.commands.base import CommandStack
+        from spriter.core.sprite import Sprite
+        from spriter.ui.canvas import CanvasWidget
+
+        s = Sprite(16, 16)
+        s.add_layer()
+        s.add_frame()
+        widget = CanvasWidget(s, CommandStack())
+        widget.resize(200, 200)
+        widget.zoom = 8.0
+        initial_zoom = widget.zoom
+
+        event = QWheelEvent(
+            QPointF(100, 100),
+            QPointF(100, 100),
+            QPoint(0, -120),
+            QPoint(0, -120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        widget.wheelEvent(event)
+        assert widget.zoom < initial_zoom
+
+    def test_scroll_wheel_zoom_emits_signal(self, qapp):
+        """Scroll zoom emits zoom_changed."""
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+        from PyQt6.QtCore import Qt
+
+        from spriter.commands.base import CommandStack
+        from spriter.core.sprite import Sprite
+        from spriter.ui.canvas import CanvasWidget
+
+        s = Sprite(16, 16)
+        s.add_layer()
+        s.add_frame()
+        widget = CanvasWidget(s, CommandStack())
+        widget.resize(200, 200)
+        received = []
+        widget.zoom_changed.connect(received.append)
+
+        event = QWheelEvent(
+            QPointF(100, 100),
+            QPointF(100, 100),
+            QPoint(0, 120),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        widget.wheelEvent(event)
+        assert len(received) == 1
+        assert received[0] == widget.zoom
+
+    def test_scroll_wheel_zoom_anchors_cursor(self, qapp):
+        """The canvas point under the cursor stays fixed during scroll zoom."""
+        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtGui import QWheelEvent
+        from PyQt6.QtCore import Qt
+
+        from spriter.commands.base import CommandStack
+        from spriter.core.sprite import Sprite
+        from spriter.ui.canvas import CanvasWidget
+
+        s = Sprite(16, 16)
+        s.add_layer()
+        s.add_frame()
+        widget = CanvasWidget(s, CommandStack())
+        widget.resize(200, 200)
+        anchor = QPointF(80.0, 90.0)
+
+        # Canvas coords under anchor before zoom.
+        cx_before, cy_before = widget._widget_to_canvas(anchor.x(), anchor.y())
+
+        event = QWheelEvent(
+            anchor,
+            anchor,
+            QPoint(0, 120),
+            QPoint(0, 120),
+            Qt.MouseButton.NoButton,
+            Qt.KeyboardModifier.NoModifier,
+            Qt.ScrollPhase.NoScrollPhase,
+            False,
+        )
+        widget.wheelEvent(event)
+
+        cx_after, cy_after = widget._widget_to_canvas(anchor.x(), anchor.y())
+        assert cx_before == cx_after
+        assert cy_before == cy_after
+
 
 # ---------------------------------------------------------------------------
 # ToolBar

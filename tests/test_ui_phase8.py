@@ -438,6 +438,86 @@ class TestCanvasReferenceAndTiling:
 
 
 # ---------------------------------------------------------------------------
+# CanvasWidget selection indicator
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasSelectionIndicator:
+    """Smoke tests for _paint_selection and _paint_selection_preview."""
+
+    def _make_canvas(self):
+        from spriter.commands.base import CommandStack
+        from spriter.ui.canvas import CanvasWidget
+
+        s = _make_sprite(16, 16)
+        return CanvasWidget(s, CommandStack()), s
+
+    def test_paint_selection_no_crash_when_mask_is_none(self, qapp):
+        """_paint_selection should be a no-op when no selection is set."""
+        from PyQt6.QtGui import QPainter
+        from PyQt6.QtCore import QPointF
+
+        canvas, _ = self._make_canvas()
+        canvas.show()
+        canvas.resize(64, 64)
+        pm = canvas.grab()  # triggers paintEvent with mask=None — no crash
+        assert pm is not None
+
+    def test_paint_selection_with_rect_mask(self, qapp):
+        """A committed rect selection should paint without error."""
+        import numpy as np
+        from PyQt6.QtCore import QPointF
+        from PyQt6.QtGui import QPainter, QPixmap
+
+        canvas, sprite = self._make_canvas()
+        canvas.show()
+        canvas.resize(128, 128)
+        mask = np.zeros((16, 16), dtype=bool)
+        mask[2:8, 2:8] = True
+        sprite.selection_mask = mask
+        pm = canvas.grab()
+        assert pm is not None
+
+    def test_paint_selection_preview_during_drag(self, qapp):
+        """_paint_selection_preview should paint the in-progress rect without error."""
+        from spriter.commands.base import CommandStack
+        from spriter.tools.select import RectSelectTool
+        from spriter.ui.canvas import CanvasWidget
+
+        canvas, sprite = self._make_canvas()
+        canvas.show()
+        canvas.resize(128, 128)
+        tool = RectSelectTool(sprite, CommandStack())
+        tool.on_press(2, 2)
+        tool.on_drag(8, 8)
+        canvas.set_tool(tool)
+        pm = canvas.grab()
+        assert pm is not None
+
+    def test_sel_anim_offset_initialised(self, qapp):
+        canvas, _ = self._make_canvas()
+        assert canvas._sel_anim_offset == 0
+
+    def test_tick_increments_offset_when_selection_present(self, qapp):
+        import numpy as np
+
+        canvas, sprite = self._make_canvas()
+        mask = np.zeros((16, 16), dtype=bool)
+        mask[0:4, 0:4] = True
+        sprite.selection_mask = mask
+        before = canvas._sel_anim_offset
+        canvas._tick_selection_anim()
+        assert canvas._sel_anim_offset == (before + 1) % 8
+
+    def test_tick_no_change_when_no_selection(self, qapp):
+        canvas, _ = self._make_canvas()
+        canvas._sel_anim_offset = 3
+        canvas._tick_selection_anim()
+        # No selection and no tool → offset unchanged.
+        assert canvas._sel_anim_offset == 3
+
+
+# ---------------------------------------------------------------------------
 # MainWindow smoke tests (Phase 7+8)
 # ---------------------------------------------------------------------------
 

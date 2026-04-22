@@ -103,6 +103,15 @@ class Tool(ABC):
         """
         return self._working.copy() if self._working is not None else None
 
+    def selection_preview_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        """Return the in-progress selection rectangle as (x0, y0, x1, y1), or ``None``.
+
+        Canvas-space coordinates, normalised so x0 <= x1 and y0 <= y1.
+        The default implementation always returns ``None``; selection tools
+        override this to expose their live drag rectangle.
+        """
+        return None
+
     # ------------------------------------------------------------------
     # Stroke helpers
     # ------------------------------------------------------------------

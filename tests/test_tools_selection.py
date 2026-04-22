@@ -149,3 +149,41 @@ class TestMagicWandTool:
         tool.on_press(0, 0)
         stack.undo()
         assert s.selection_mask is None
+
+
+class TestRectSelectPreviewRect:
+    def test_none_before_press(self):
+        s, stack = _setup()
+        tool = RectSelectTool(s, stack)
+        assert tool.selection_preview_rect() is None
+
+    def test_set_on_press(self):
+        s, stack = _setup()
+        tool = RectSelectTool(s, stack)
+        tool.on_press(3, 3)
+        r = tool.selection_preview_rect()
+        assert r == (3, 3, 3, 3)
+
+    def test_updates_on_drag(self):
+        s, stack = _setup()
+        tool = RectSelectTool(s, stack)
+        tool.on_press(2, 2)
+        tool.on_drag(8, 9)
+        r = tool.selection_preview_rect()
+        assert r == (2, 2, 8, 9)
+
+    def test_normalised_for_inverted_drag(self):
+        s, stack = _setup()
+        tool = RectSelectTool(s, stack)
+        tool.on_press(10, 10)
+        tool.on_drag(2, 3)
+        r = tool.selection_preview_rect()
+        assert r == (2, 3, 10, 10)
+
+    def test_cleared_on_release(self):
+        s, stack = _setup()
+        tool = RectSelectTool(s, stack)
+        tool.on_press(0, 0)
+        tool.on_drag(5, 5)
+        tool.on_release(5, 5)
+        assert tool.selection_preview_rect() is None

@@ -13,7 +13,7 @@ from __future__ import annotations
 from typing import Optional, Tuple
 
 import numpy as np
-from PyQt6.QtCore import QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QLine, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QWheelEvent
 from PyQt6.QtWidgets import QWidget
 
@@ -82,6 +82,13 @@ class CanvasWidget(QWidget):
 
         # Tiling preview — renders the canvas in a 3×3 tile grid.
         self.tiling_preview: bool = False
+
+        # Marching-ants animation — increments every 100 ms.
+        self._sel_anim_offset: int = 0
+        self._sel_timer = QTimer(self)
+        self._sel_timer.setInterval(100)
+        self._sel_timer.timeout.connect(self._tick_selection_anim)
+        self._sel_timer.start()
 
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
@@ -246,6 +253,10 @@ class CanvasWidget(QWidget):
         # Tiling preview — 3×3 repeated copies surrounding the main canvas.
         if self.tiling_preview:
             self._paint_tiling_preview(painter, offset, scaled_w, scaled_h)
+
+        # Selection overlay — committed mask and in-progress drag rectangle.
+        self._paint_selection(painter, offset)
+        self._paint_selection_preview(painter, offset)
 
         painter.end()
 
@@ -502,6 +513,113 @@ class CanvasWidget(QWidget):
         painter.setOpacity(self.reference_opacity)
         painter.drawImage(offset, scaled_ref)
         painter.setOpacity(1.0)
+
+    def _tick_selection_anim(self) -> None:
+        """Advance the marching-ants dash offset and repaint if a selection exists."""
+        has_sel = self._sprite.selection_mask is not None
+        has_preview = (
+            self._tool is not None and self._tool.selection_preview_rect() is not None
+        )
+        if has_sel or has_preview:
+            self._sel_anim_offset = (self._sel_anim_offset + 1) % 8
+            self.update()
+
+    def _paint_selection(
+        self,
+        painter: QPainter,
+        offset: QPointF,
+    ) -> None:
+        """Draw a marching-ants border around the committed selection mask."""
+        mask = self._sprite.selection_mask
+        if mask is None:
+            return
+        h, w = mask.shape
+        z = self._zoom
+        ox, oy = offset.x(), offset.y()
+        anim = self._sel_anim_offset
+
+        # Detect border edges using padded mask comparisons.
+        padded = np.zeros((h + 2, w + 2), dtype=bool)
+        padded[1 : h + 1, 1 : w + 1] = mask
+
+        edge_top_r, edge_top_c = np.where(
+            padded[1 : h + 1, 1 : w + 1] & ~padded[0:h, 1 : w + 1]
+        )
+        edge_bot_r, edge_bot_c = np.where(
+            padded[1 : h + 1, 1 : w + 1] & ~padded[2 : h + 2, 1 : w + 1]
+        )
+        edge_left_r, edge_left_c = np.where(
+            padded[1 : h + 1, 1 : w + 1] & ~padded[1 : h + 1, 0:w]
+        )
+        edge_right_r, edge_right_c = np.where(
+            padded[1 : h + 1, 1 : w + 1] & ~padded[1 : h + 1, 2 : w + 2]
+        )
+
+        white_lines: list[QLine] = []
+        black_lines: list[QLine] = []
+
+        def _add_h(rows, cols, y_offset: int) -> None:
+            for r, c in zip(rows, cols):
+                color_idx = (r + c + anim) % 2
+                x1 = int(ox + c * z)
+                y = int(oy + r * z) + y_offset
+                x2 = int(ox + (c + 1) * z) - 1
+                (white_lines if color_idx == 0 else black_lines).append(
+                    QLine(x1, y, x2, y)
+                )
+
+        def _add_v(rows, cols, x_offset: int) -> None:
+            for r, c in zip(rows, cols):
+                color_idx = (r + c + anim) % 2
+                x = int(ox + c * z) + x_offset
+                y1 = int(oy + r * z)
+                y2 = int(oy + (r + 1) * z) - 1
+                (white_lines if color_idx == 0 else black_lines).append(
+                    QLine(x, y1, x, y2)
+                )
+
+        _add_h(edge_top_r, edge_top_c, 0)
+        _add_h(edge_bot_r, edge_bot_c, int(z) - 1)
+        _add_v(edge_left_r, edge_left_c, 0)
+        _add_v(edge_right_r, edge_right_c, int(z) - 1)
+
+        painter.setPen(QPen(QColor(255, 255, 255)))
+        if white_lines:
+            painter.drawLines(white_lines)
+        painter.setPen(QPen(QColor(0, 0, 0)))
+        if black_lines:
+            painter.drawLines(black_lines)
+
+    def _paint_selection_preview(
+        self,
+        painter: QPainter,
+        offset: QPointF,
+    ) -> None:
+        """Draw the in-progress selection rectangle while the user is dragging."""
+        if self._tool is None:
+            return
+        rect = self._tool.selection_preview_rect()
+        if rect is None:
+            return
+        x0, y0, x1, y1 = rect
+        z = self._zoom
+        ox, oy = offset.x(), offset.y()
+        px0 = int(ox + x0 * z)
+        py0 = int(oy + y0 * z)
+        px1 = int(ox + (x1 + 1) * z)
+        py1 = int(oy + (y1 + 1) * z)
+        anim = self._sel_anim_offset
+        for color, d_off in (
+            (QColor(255, 255, 255), anim),
+            (QColor(0, 0, 0), anim + 4),
+        ):
+            pen = QPen(color)
+            pen.setWidth(1)
+            pen.setStyle(Qt.PenStyle.CustomDashLine)
+            pen.setDashPattern([4.0, 4.0])
+            pen.setDashOffset(float(d_off))
+            painter.setPen(pen)
+            painter.drawRect(px0, py0, px1 - px0, py1 - py0)
 
     def _paint_tiling_preview(
         self,

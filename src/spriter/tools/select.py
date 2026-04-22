@@ -26,6 +26,7 @@ class RectSelectTool(Tool):
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._start: Optional[Tuple[int, int]] = None
+        self._current: Optional[Tuple[int, int]] = None
         self._before_mask: Optional[np.ndarray] = None
 
     def on_press(self, x: int, y: int) -> None:
@@ -35,9 +36,10 @@ class RectSelectTool(Tool):
             else None
         )
         self._start = (x, y)
+        self._current = (x, y)
 
     def on_drag(self, x: int, y: int) -> None:
-        pass  # No live-preview for selection in headless mode.
+        self._current = (x, y)
 
     def on_release(self, x: int, y: int) -> None:
         if self._start is None:
@@ -53,6 +55,15 @@ class RectSelectTool(Tool):
         cmd = SetSelectionCommand(self._sprite, self._before_mask, mask)
         self._stack.push(cmd)
         self._start = None
+        self._current = None
+
+    def selection_preview_rect(self) -> Optional[Tuple[int, int, int, int]]:
+        """Return the live drag rectangle as ``(x0, y0, x1, y1)`` (normalised)."""
+        if self._start is None or self._current is None:
+            return None
+        x0, y0 = self._start
+        x1, y1 = self._current
+        return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
 
     # These tools don't draw pixels, so stroke helpers are unused.
     def _begin_stroke(self):  # type: ignore[override]

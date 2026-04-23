@@ -348,6 +348,9 @@ class MainWindow(QMainWindow):
         edit_menu = mb.addMenu("&Edit")
         self._undo_action = self._add_action(edit_menu, "&Undo", self._undo, "Ctrl+Z")
         self._redo_action = self._add_action(edit_menu, "&Redo", self._redo, "Ctrl+Y")
+        edit_menu.addSeparator()
+        self._add_action(edit_menu, "Select &All", self._select_all, "Ctrl+A")
+        self._add_action(edit_menu, "Select &None", self._select_none, "Ctrl+D")
 
         # ── View ──────────────────────────────────────────────────────
         view_menu = mb.addMenu("&View")
@@ -376,6 +379,13 @@ class MainWindow(QMainWindow):
         self._add_action(frame_menu, "&Add Frame", self._add_frame)
         self._add_action(frame_menu, "&Delete Frame", self._delete_frame)
         self._add_action(frame_menu, "D&uplicate Frame", self._duplicate_frame)
+        frame_menu.addSeparator()
+        self._add_action(
+            frame_menu, "Move Frame &Left", self._move_frame_left, "Ctrl+Shift+,"
+        )
+        self._add_action(
+            frame_menu, "Move Frame &Right", self._move_frame_right, "Ctrl+Shift+."
+        )
 
         # ── Animation ─────────────────────────────────────────────────
         anim_menu = mb.addMenu("&Animation")
@@ -526,6 +536,10 @@ class MainWindow(QMainWindow):
             self._canvas.active_layer = layer_idx
             if self._canvas._tool:
                 self._canvas._tool.layer_index = layer_idx
+        if self._sprite:
+            self._sprite.clear_selection()
+            if self._canvas:
+                self._canvas.update()
 
     def _on_layers_modified(self) -> None:
         if self._canvas:
@@ -533,6 +547,19 @@ class MainWindow(QMainWindow):
         if self._timeline:
             self._timeline.refresh()
         self._unsaved = True
+
+    def _select_all(self) -> None:
+        if self._sprite and self._canvas:
+            import numpy as np
+
+            h, w = self._sprite.height, self._sprite.width
+            self._sprite.selection_mask = np.ones((h, w), dtype=bool)
+            self._canvas.update()
+
+    def _select_none(self) -> None:
+        if self._sprite and self._canvas:
+            self._sprite.clear_selection()
+            self._canvas.update()
 
     # ------------------------------------------------------------------
     # Menu actions
@@ -556,6 +583,8 @@ class MainWindow(QMainWindow):
                 self._canvas.invalidate_cache()
             if self._layers_panel:
                 self._layers_panel.refresh()
+                if self._canvas:
+                    self._canvas.active_layer = self._layers_panel.active_layer
 
     def _redo(self) -> None:
         if self._stack.can_redo:
@@ -567,6 +596,8 @@ class MainWindow(QMainWindow):
                 self._canvas.invalidate_cache()
             if self._layers_panel:
                 self._layers_panel.refresh()
+                if self._canvas:
+                    self._canvas.active_layer = self._layers_panel.active_layer
 
     def _zoom_in(self) -> None:
         if self._canvas:
@@ -644,6 +675,14 @@ class MainWindow(QMainWindow):
         if self._timeline:
             self._timeline.set_active_frame(fi + 1)
             self._timeline.refresh()
+
+    def _move_frame_left(self) -> None:
+        if self._timeline:
+            self._timeline._move_frame_left()
+
+    def _move_frame_right(self) -> None:
+        if self._timeline:
+            self._timeline._move_frame_right()
 
     def _on_timeline_frame_selected(self, frame_index: int) -> None:
         if self._canvas:

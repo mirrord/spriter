@@ -38,6 +38,7 @@ from ..commands.base import CommandStack
 from ..commands.frame_ops import (
     AddFrameCommand,
     DuplicateFrameCommand,
+    MoveFrameCommand,
     RemoveFrameCommand,
 )
 from ..core.sprite import Sprite
@@ -201,6 +202,8 @@ class TimelinePanel(QWidget):
             ("+", self._add_frame),
             ("×", self._remove_frame),
             ("⧉", self._duplicate_frame),
+            ("\u25c0", self._move_frame_left),
+            ("\u25b6", self._move_frame_right),
         ):
             btn = QPushButton(label)
             btn.setFixedSize(28, 22)
@@ -288,5 +291,25 @@ class TimelinePanel(QWidget):
         cmd = DuplicateFrameCommand(self._sprite, self._active_frame)
         self._stack.push(cmd)
         self._active_frame = self._active_frame + 1
+        self.refresh()
+        self.frame_selected.emit(self._active_frame)
+
+    def _move_frame_left(self) -> None:
+        if self._active_frame <= 0:
+            return
+        to = self._active_frame - 1
+        cmd = MoveFrameCommand(self._sprite, self._active_frame, to)
+        self._stack.push(cmd)
+        self._active_frame = to
+        self.refresh()
+        self.frame_selected.emit(self._active_frame)
+
+    def _move_frame_right(self) -> None:
+        if self._active_frame >= self._sprite.frame_count - 1:
+            return
+        to = self._active_frame + 1
+        cmd = MoveFrameCommand(self._sprite, self._active_frame, to)
+        self._stack.push(cmd)
+        self._active_frame = to
         self.refresh()
         self.frame_selected.emit(self._active_frame)

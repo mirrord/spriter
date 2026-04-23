@@ -37,6 +37,8 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QSlider,
+    QStyle,
+    QStyleOptionSlider,
     QVBoxLayout,
     QWidget,
 )
@@ -64,6 +66,58 @@ _BLEND_MODE_LABELS = {
 _LABEL_TO_MODE = {v: k for k, v in _BLEND_MODE_LABELS.items()}
 
 _THUMB_SIZE = 24  # thumbnail side length in pixels
+# Eye icon occupies roughly chars 0-2 in item text; approximate pixel range
+# after the thumbnail + item left margin used for hit-testing.
+_EYE_X_START = _THUMB_SIZE + 6
+_EYE_X_END = _THUMB_SIZE + 32
+
+
+class _LayerList(QListWidget):
+    """QListWidget subclass that intercepts clicks on the eye-icon column."""
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            item = self.itemAt(event.pos())
+            if item is not None:
+                rect = self.visualItemRect(item)
+                local_x = event.pos().x() - rect.left()
+                if _EYE_X_START <= local_x <= _EYE_X_END:
+                    layer_idx = item.data(Qt.ItemDataRole.UserRole)
+                    if layer_idx is not None:
+                        panel: LayersPanel = self.parent()  # type: ignore[assignment]
+                        panel._toggle_visibility(layer_idx)
+                        return
+        super().mousePressEvent(event)
+
+
+class _JumpSlider(QSlider):
+    """QSlider that jumps to the clicked position instead of paging."""
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            opt = QStyleOptionSlider()
+            self.initStyleOption(opt)
+            groove = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider,
+                opt,
+                QStyle.SubControl.SC_SliderGroove,
+                self,
+            )
+            if self.orientation() == Qt.Orientation.Horizontal:
+                pos = event.pos().x() - groove.left()
+                span = groove.width()
+            else:
+                pos = event.pos().y() - groove.top()
+                span = groove.height()
+            value = QStyle.sliderValueFromPosition(
+                self.minimum(),
+                self.maximum(),
+                pos,
+                span,
+                self.invertedAppearance(),
+            )
+            self.setValue(value)
+        super().mousePressEvent(event)
 
 
 def _make_thumbnail(sprite: Sprite, layer_idx: int, frame_idx: int) -> QPixmap:
@@ -125,7 +179,7 @@ class LayersPanel(QWidget):
         root.setSpacing(4)
 
         # ── Layer list ────────────────────────────────────────────────
-        self._list = QListWidget(self)
+        self._list = _LayerList(self)
         self._list.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
         self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -147,7 +201,7 @@ class LayersPanel(QWidget):
 
         opacity_row = QHBoxLayout()
         opacity_row.addWidget(QLabel("Opacity:"))
-        self._opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self._opacity_slider = _JumpSlider(Qt.Orientation.Horizontal)
         self._opacity_slider.setRange(0, 255)
         self._opacity_slider.setValue(255)
         self._opacity_slider.valueChanged.connect(self._on_opacity_changed)
@@ -186,6 +240,10 @@ class LayersPanel(QWidget):
     def refresh(self) -> None:
         """Rebuild the list from the sprite's current layer state."""
         self._refreshing = True
+        # Clamp active_layer so _select_row_for_layer always finds a valid row.
+        self._active_layer = max(
+            0, min(self._active_layer, self._sprite.layer_count - 1)
+        )
         self._list.clear()
         # Show layers top-to-bottom (highest index first for visual naturalness).
         for li in reversed(range(self._sprite.layer_count)):

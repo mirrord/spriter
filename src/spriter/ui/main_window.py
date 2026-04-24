@@ -328,11 +328,15 @@ class MainWindow(QMainWindow):
         self._add_action(export_menu, "Export Sheet + &Atlas…", self._export_atlas)
         export_menu.addSeparator()
         self._add_action(export_menu, "Export as &ICO…", self._export_ico)
+        export_menu.addSeparator()
+        self._add_action(export_menu, "Export &Palette…", self._export_palette)
         file_menu.addMenu(export_menu)
         # Import sub-menu
         import_menu = QMenu("&Import", self)
         self._add_action(import_menu, "Import &PNG as Sprite…", self._import_png)
         self._add_action(import_menu, "Import Sprite &Sheet…", self._import_sheet)
+        import_menu.addSeparator()
+        self._add_action(import_menu, "Import &Palette…", self._import_palette)
         file_menu.addMenu(import_menu)
         file_menu.addSeparator()
         # Copy / Paste

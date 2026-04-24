@@ -10,6 +10,8 @@ Layout
     ┌──────────────────────────────┐
     │   [FG swatch] [BG swatch]   │
     ├──────────────────────────────┤
+    │  [SV square        ] [H │]  │
+    ├──────────────────────────────┤
     │  H: ──────────────  [360]   │
     │  S: ──────────────  [255]   │
     │  V: ──────────────  [255]   │
@@ -19,6 +21,8 @@ Layout
     │  Hex: [       #RRGGBBAA  ]  │
     ├──────────────────────────────┤
     │  [palette grid …]           │
+    ├──────────────────────────────┤
+    │  Recent: [■][■][■]…         │
     └──────────────────────────────┘
 
 Clicking a swatch makes it "active"; the sliders then edit that swatch's
@@ -29,16 +33,18 @@ colour.  Emits :attr:`ColorPicker.foreground_changed` or
 from __future__ import annotations
 
 import re
-from typing import Optional, Tuple
+from typing import List, Optional, Tuple
 
-from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+import numpy as np
+from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
     QSlider,
     QSpinBox,
     QToolButton,
@@ -82,6 +88,269 @@ class _ColorSwatch(QWidget):
             self.clicked.emit()
 
 
+# ---------------------------------------------------------------------------
+# _HueStrip — vertical rainbow strip for selecting hue (H in HSV)
+# ---------------------------------------------------------------------------
+
+
+class _HueStrip(QWidget):
+    """A vertical rainbow strip; clicking/dragging picks a hue (0–359)."""
+
+    hue_changed = pyqtSignal(int)
+
+    _W = 16
+    _H = 150
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._W, self._H)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._hue: int = 0
+        self._gradient: Optional[QImage] = None
+
+    def set_hue(self, h: int) -> None:
+        self._hue = max(0, min(359, h))
+        self.update()
+
+    def _ensure_gradient(self) -> QImage:
+        if self._gradient is not None:
+            return self._gradient
+        h = self._H
+        # Build RGBA array: each row is a different hue
+        hues = np.linspace(0, 359, h, dtype=np.float32)
+        # HSV to RGB: S=1, V=1
+        h6 = hues / 60.0
+        i = np.floor(h6).astype(np.int32) % 6
+        f = h6 - np.floor(h6)
+        # p=0, q=1-f, t=f  (S=V=1)
+        q = 1.0 - f
+        t = f
+        r = np.where(
+            i == 0,
+            1.0,
+            np.where(
+                i == 1,
+                q,
+                np.where(i == 2, 0.0, np.where(i == 3, 0.0, np.where(i == 4, t, 1.0))),
+            ),
+        )
+        g = np.where(
+            i == 0,
+            t,
+            np.where(
+                i == 1,
+                1.0,
+                np.where(i == 2, 1.0, np.where(i == 3, q, np.where(i == 4, 0.0, 0.0))),
+            ),
+        )
+        b = np.where(
+            i == 0,
+            0.0,
+            np.where(
+                i == 1,
+                0.0,
+                np.where(i == 2, f, np.where(i == 3, 1.0, np.where(i == 4, 1.0, q))),
+            ),
+        )
+        # Shape: (H, W, 4)
+        w = self._W
+        rgba = np.zeros((h, w, 4), dtype=np.uint8)
+        rgba[:, :, 0] = (r * 255).astype(np.uint8)[:, np.newaxis]
+        rgba[:, :, 1] = (g * 255).astype(np.uint8)[:, np.newaxis]
+        rgba[:, :, 2] = (b * 255).astype(np.uint8)[:, np.newaxis]
+        rgba[:, :, 3] = 255
+        raw = rgba.tobytes()
+        img = QImage(raw, w, h, w * 4, QImage.Format.Format_RGBA8888)
+        self._gradient = img.copy()  # detach from numpy buffer lifetime
+        return self._gradient
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        img = self._ensure_gradient()
+        p.drawImage(0, 0, img)
+        # Cursor line
+        y = int(self._hue / 359.0 * (self._H - 1))
+        pen = QPen(Qt.GlobalColor.white, 2)
+        p.setPen(pen)
+        p.drawLine(0, y, self._W - 1, y)
+
+    def _pick_from_y(self, y: float) -> None:
+        h = max(0, min(359, int(y / (self._H - 1) * 359)))
+        self._hue = h
+        self.update()
+        self.hue_changed.emit(h)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            self._pick_from_y(event.position().y())
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            self._pick_from_y(event.position().y())
+
+
+# ---------------------------------------------------------------------------
+# _SVSquare — 2-D saturation/value gradient square for current hue
+# ---------------------------------------------------------------------------
+
+
+def _hsv_to_rgb_array(hue: int, size: int) -> np.ndarray:
+    """Return a (size, size, 3) uint8 array: S on x-axis, V on y-axis (top=high V)."""
+    s_vals = np.linspace(0.0, 1.0, size, dtype=np.float32)  # x
+    v_vals = np.linspace(1.0, 0.0, size, dtype=np.float32)  # y (top row = V=1)
+    # Shape grids: (size, size)
+    s_grid, v_grid = np.meshgrid(s_vals, v_vals)
+
+    h6 = hue / 60.0
+    i = int(h6) % 6
+    f = h6 - int(h6)
+
+    p = v_grid * (1.0 - s_grid)
+    q = v_grid * (1.0 - f * s_grid)
+    t = v_grid * (1.0 - (1.0 - f) * s_grid)
+
+    if i == 0:
+        r, g, b = v_grid, t, p
+    elif i == 1:
+        r, g, b = q, v_grid, p
+    elif i == 2:
+        r, g, b = p, v_grid, t
+    elif i == 3:
+        r, g, b = p, q, v_grid
+    elif i == 4:
+        r, g, b = t, p, v_grid
+    else:
+        r, g, b = v_grid, p, q
+
+    rgb = np.stack(
+        [
+            (r * 255).astype(np.uint8),
+            (g * 255).astype(np.uint8),
+            (b * 255).astype(np.uint8),
+        ],
+        axis=2,
+    )
+    return rgb
+
+
+class _SVSquare(QWidget):
+    """Saturation/Value 2-D gradient square for the current hue."""
+
+    sv_changed = pyqtSignal(int, int)  # saturation, value (0–255 each)
+
+    _SIZE = 150
+
+    def __init__(self, parent: Optional[QWidget] = None) -> None:
+        super().__init__(parent)
+        self.setFixedSize(self._SIZE, self._SIZE)
+        self.setCursor(Qt.CursorShape.CrossCursor)
+        self._hue: int = 0
+        self._s: int = 255
+        self._v: int = 255
+        self._cached_hue: Optional[int] = None
+        self._cached_img: Optional[QImage] = None
+
+    def set_hue(self, h: int) -> None:
+        self._hue = max(0, min(359, h))
+        if self._cached_hue != self._hue:
+            self._cached_img = None  # invalidate
+        self.update()
+
+    def set_sv(self, s: int, v: int) -> None:
+        self._s = max(0, min(255, s))
+        self._v = max(0, min(255, v))
+        self.update()
+
+    def _ensure_image(self) -> QImage:
+        if self._cached_img is not None and self._cached_hue == self._hue:
+            return self._cached_img
+        sz = self._SIZE
+        rgb = _hsv_to_rgb_array(self._hue, sz)
+        # Add alpha channel
+        alpha = np.full((sz, sz, 1), 255, dtype=np.uint8)
+        rgba = np.concatenate([rgb, alpha], axis=2)
+        raw = rgba.tobytes()
+        img = QImage(raw, sz, sz, sz * 4, QImage.Format.Format_RGBA8888)
+        self._cached_img = img.copy()
+        self._cached_hue = self._hue
+        return self._cached_img
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.drawImage(0, 0, self._ensure_image())
+        # Crosshair at current S/V position
+        sz = self._SIZE
+        cx = int(self._s / 255.0 * (sz - 1))
+        cy = int((255 - self._v) / 255.0 * (sz - 1))
+        p.setPen(QPen(Qt.GlobalColor.white, 1))
+        p.drawLine(cx - 4, cy, cx + 4, cy)
+        p.drawLine(cx, cy - 4, cx, cy + 4)
+        p.setPen(QPen(Qt.GlobalColor.black, 1))
+        p.drawRect(cx - 4, cy - 4, 8, 8)
+
+    def _pick_from_pos(self, x: float, y: float) -> None:
+        sz = self._SIZE
+        s = max(0, min(255, int(x / (sz - 1) * 255)))
+        v = max(0, min(255, int((1.0 - y / (sz - 1)) * 255)))
+        self._s = s
+        self._v = v
+        self.update()
+        self.sv_changed.emit(s, v)
+
+    def mousePressEvent(self, event) -> None:  # type: ignore[override]
+        if event.button() == Qt.MouseButton.LeftButton:
+            pos = event.position()
+            self._pick_from_pos(pos.x(), pos.y())
+
+    def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
+        if event.buttons() & Qt.MouseButton.LeftButton:
+            pos = event.position()
+            self._pick_from_pos(pos.x(), pos.y())
+
+
+# ---------------------------------------------------------------------------
+# _PaletteButton — QToolButton with right-click context menu for palette slots
+# ---------------------------------------------------------------------------
+
+
+class _PaletteButton(QToolButton):
+    """A palette slot button with right-click edit/delete actions."""
+
+    set_color_requested = pyqtSignal(int)  # slot index
+    delete_requested = pyqtSignal(int)  # slot index
+
+    def __init__(
+        self,
+        index: int,
+        color: Color,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.index = index
+        self._color = color
+        self.setFixedSize(20, 20)
+        r, g, b = color[0], color[1], color[2]
+        self.setStyleSheet(
+            f"background-color: rgb({r},{g},{b}); border: 1px solid #555;"
+        )
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._show_context_menu)
+
+    def _build_context_menu(self) -> QMenu:
+        menu = QMenu(self)
+        set_act = QAction("Set to Foreground Color", menu)
+        set_act.triggered.connect(lambda: self.set_color_requested.emit(self.index))
+        menu.addAction(set_act)
+        del_act = QAction("Delete Slot", menu)
+        del_act.triggered.connect(lambda: self.delete_requested.emit(self.index))
+        menu.addAction(del_act)
+        return menu
+
+    def _show_context_menu(self, pos: QPoint) -> None:
+        menu = self._build_context_menu()
+        menu.exec(self.mapToGlobal(pos))
+
+
 class ColorPicker(QWidget):
     """Foreground / background colour selector with HSV sliders and hex input.
 
@@ -120,6 +389,16 @@ class ColorPicker(QWidget):
 
         self._fg_swatch.clicked.connect(lambda: self._set_editing_fg(True))
         self._bg_swatch.clicked.connect(lambda: self._set_editing_fg(False))
+
+        # ── Gradient picker: SV square + H strip (Aseprite-style) ────
+        self._sv_square = _SVSquare()
+        self._hue_strip = _HueStrip()
+        gradient_row = QHBoxLayout()
+        gradient_row.setSpacing(4)
+        gradient_row.addWidget(self._sv_square)
+        gradient_row.addWidget(self._hue_strip)
+        gradient_row.addStretch()
+        root.addLayout(gradient_row)
 
         # ── HSV + Alpha sliders ──────────────────────────────────────
         slider_frame = QFrame()
@@ -163,10 +442,30 @@ class ColorPicker(QWidget):
         palette_grid = QGridLayout(self._palette_frame)
         palette_grid.setSpacing(2)
         palette_grid.setContentsMargins(2, 2, 2, 2)
-        self._palette_buttons: list = []
+        self._palette_buttons: List[_PaletteButton] = []
         self._palette_colors: list = [(r, g, b, 255) for r, g, b in _DEFAULT_PALETTE]
         self._rebuild_palette_grid(self._palette_colors)
         root.addWidget(self._palette_frame)
+
+        # ── Recent colours row ───────────────────────────────────────
+        self._recent_colors: List[Color] = []
+        recent_frame = QFrame()
+        recent_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        recent_row = QHBoxLayout(recent_frame)
+        recent_row.setContentsMargins(2, 2, 2, 2)
+        recent_row.setSpacing(2)
+        recent_row.addWidget(QLabel("Recent:"))
+        self._recent_buttons: List[QToolButton] = []
+        for _ in range(16):
+            btn = QToolButton()
+            btn.setFixedSize(16, 16)
+            btn.setStyleSheet("background-color: #333; border: 1px solid #555;")
+            btn.setEnabled(False)
+            recent_row.addWidget(btn)
+            self._recent_buttons.append(btn)
+        recent_row.addStretch()
+        root.addWidget(recent_frame)
+
         root.addStretch()
 
         # Connect slider/spin changes
@@ -186,6 +485,10 @@ class ColorPicker(QWidget):
             spin.valueChanged.connect(self._on_rgb_changed)
 
         self._hex_edit.editingFinished.connect(self._on_hex_edited)
+
+        # Connect gradient picker signals
+        self._hue_strip.hue_changed.connect(self._on_hue_strip_changed)
+        self._sv_square.sv_changed.connect(self._on_sv_square_changed)
 
         # Initialise display to FG (black).
         self._refresh_controls()
@@ -211,6 +514,7 @@ class ColorPicker(QWidget):
         if self._editing_fg:
             self._refresh_controls()
         self.foreground_changed.emit(color)
+        self.push_recent(color)
 
     @property
     def background(self) -> Color:
@@ -262,6 +566,49 @@ class ColorPicker(QWidget):
         ]
         self._rebuild_palette_grid(self._palette_colors)
 
+    def push_recent(self, color: Color) -> None:
+        """Prepend *color* to the recent-colours row (max 16, newest first).
+
+        Duplicate entries are removed before insertion.
+
+        Args:
+            color: ``(R, G, B, A)`` tuple.
+        """
+        normalized: Color = (
+            color[0],
+            color[1],
+            color[2],
+            color[3] if len(color) > 3 else 255,
+        )
+        # Remove existing duplicate
+        self._recent_colors = [c for c in self._recent_colors if c != normalized]
+        self._recent_colors.insert(0, normalized)
+        self._recent_colors = self._recent_colors[:16]
+        self._refresh_recent_buttons()
+
+    def _refresh_recent_buttons(self) -> None:
+        for i, btn in enumerate(self._recent_buttons):
+            if i < len(self._recent_colors):
+                color = self._recent_colors[i]
+                r, g, b = color[0], color[1], color[2]
+                btn.setStyleSheet(
+                    f"background-color: rgb({r},{g},{b}); border: 1px solid #555;"
+                )
+                btn.setEnabled(True)
+                # Disconnect old connections before reconnecting
+                try:
+                    btn.clicked.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+                btn.clicked.connect(lambda _, c=color: self._apply_palette_color(c))
+            else:
+                btn.setStyleSheet("background-color: #333; border: 1px solid #555;")
+                btn.setEnabled(False)
+                try:
+                    btn.clicked.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
@@ -300,6 +647,10 @@ class ColorPicker(QWidget):
             self._hex_edit.setText(
                 f"#{c.red():02x}{c.green():02x}{c.blue():02x}{c.alpha():02x}"
             )
+            # Sync gradient widgets
+            self._sv_square.set_hue(h)
+            self._sv_square.set_sv(s, v)
+            self._hue_strip.set_hue(h)
         finally:
             self._updating = False
 
@@ -405,6 +756,18 @@ class ColorPicker(QWidget):
         finally:
             self._updating = False
         self._apply_color(color)
+        self.push_recent((color.red(), color.green(), color.blue(), color.alpha()))
+
+    def _on_hue_strip_changed(self, hue: int) -> None:
+        """Hue strip was clicked/dragged — update the H spin (which triggers _on_hsva_changed)."""
+        if not self._updating:
+            self._h_spin.setValue(hue)
+
+    def _on_sv_square_changed(self, s: int, v: int) -> None:
+        """SV square was clicked/dragged — update S/V spins."""
+        if not self._updating:
+            self._s_spin.setValue(s)
+            self._v_spin.setValue(v)
 
     def _rebuild_palette_grid(self, colors: list) -> None:
         """Clear and repopulate the palette button grid."""
@@ -417,12 +780,10 @@ class ColorPicker(QWidget):
             r, g, b = color[0], color[1], color[2]
             a = color[3] if len(color) > 3 else 255
             c: Color = (r, g, b, a)
-            btn = QToolButton()
-            btn.setFixedSize(20, 20)
-            btn.setStyleSheet(
-                f"background-color: rgb({r},{g},{b}); border: 1px solid #555;"
-            )
+            btn = _PaletteButton(i, c)
             btn.clicked.connect(lambda _, col=c: self._apply_palette_color(col))
+            btn.set_color_requested.connect(self._on_palette_set_color)
+            btn.delete_requested.connect(self._on_palette_delete)
             layout.addWidget(btn, i // 8, i % 8)
             self._palette_buttons.append(btn)
 
@@ -438,6 +799,19 @@ class ColorPicker(QWidget):
         self._r_spin.setValue(qc.red())
         self._g_spin.setValue(qc.green())
         self._b_spin.setValue(qc.blue())
+        self.push_recent(color)
+
+    def _on_palette_set_color(self, index: int) -> None:
+        """Set palette slot *index* to the current foreground colour."""
+        if 0 <= index < len(self._palette_colors):
+            self._palette_colors[index] = self.foreground
+            self._rebuild_palette_grid(self._palette_colors)
+
+    def _on_palette_delete(self, index: int) -> None:
+        """Remove palette slot *index*."""
+        if 0 <= index < len(self._palette_colors):
+            del self._palette_colors[index]
+            self._rebuild_palette_grid(self._palette_colors)
 
     # ------------------------------------------------------------------
     # Widget creation helpers

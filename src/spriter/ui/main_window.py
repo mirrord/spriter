@@ -48,6 +48,7 @@ from ..commands.layer_ops import (
     MergeLayerDownCommand,
     RemoveLayerCommand,
 )
+from ..core.palette import Palette
 from ..core.settings import Settings
 from ..core.sprite import Sprite
 from ..io.gif_io import export_gif
@@ -164,6 +165,9 @@ class MainWindow(QMainWindow):
         Args:
             path: File path string.  Opens a file dialog if ``None``.
         """
+        # QAction.triggered passes a bool (checked state); treat non-str as None.
+        if not isinstance(path, str):
+            path = None
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
                 self, "Open Project", "", "Spriter files (*.spriter)"
@@ -408,6 +412,7 @@ class MainWindow(QMainWindow):
         self._onion_action = self._add_action(
             anim_menu, "&Onion Skinning", self._toggle_onion_skin, checkable=True
         )
+        self._add_action(anim_menu, "Onion Skin &Depth\u2026", self._prompt_onion_depth)
 
         # ── Transform ─────────────────────────────────────────────────
         xform_menu = mb.addMenu("&Transform")
@@ -485,6 +490,12 @@ class MainWindow(QMainWindow):
                 )
             )
 
+        # Swap FG/BG colours (X key — Photoshop/Aseprite convention).
+        swap_sc = QShortcut(QKeySequence("X"), self)
+        swap_sc.activated.connect(
+            lambda: self._color_picker.swap_colors() if self._color_picker else None
+        )
+
     def _init_status_bar(self) -> None:
         bar: QStatusBar = self.statusBar()
         bar.addWidget(QLabel("Cursor:"))
@@ -547,6 +558,7 @@ class MainWindow(QMainWindow):
         if self._timeline:
             self._timeline.refresh()
         self._unsaved = True
+        self._refresh_undo_redo_labels()
 
     def _select_all(self) -> None:
         if self._sprite and self._canvas:
@@ -573,6 +585,13 @@ class MainWindow(QMainWindow):
         if ok2:
             self.new_project(w, h)
 
+    def _refresh_undo_redo_labels(self) -> None:
+        """Update Undo/Redo menu item text with the top-of-stack description."""
+        desc = self._stack.undo_description
+        self._undo_action.setText(f"&Undo: {desc}" if desc else "&Undo")
+        desc = self._stack.redo_description
+        self._redo_action.setText(f"&Redo: {desc}" if desc else "&Redo")
+
     def _undo(self) -> None:
         if self._stack.can_undo:
             self._stack.undo()
@@ -585,6 +604,7 @@ class MainWindow(QMainWindow):
                 self._layers_panel.refresh()
                 if self._canvas:
                     self._canvas.active_layer = self._layers_panel.active_layer
+        self._refresh_undo_redo_labels()
 
     def _redo(self) -> None:
         if self._stack.can_redo:
@@ -598,6 +618,7 @@ class MainWindow(QMainWindow):
                 self._layers_panel.refresh()
                 if self._canvas:
                     self._canvas.active_layer = self._layers_panel.active_layer
+        self._refresh_undo_redo_labels()
 
     def _zoom_in(self) -> None:
         if self._canvas:
@@ -645,6 +666,7 @@ class MainWindow(QMainWindow):
             self._canvas.invalidate_cache()
         if self._timeline:
             self._timeline.refresh()
+        self._refresh_undo_redo_labels()
 
     def _delete_frame(self) -> None:
         if self._sprite is None or self._sprite.frame_count <= 1:
@@ -662,6 +684,7 @@ class MainWindow(QMainWindow):
         if self._timeline:
             self._timeline.set_active_frame(new_fi)
             self._timeline.refresh()
+        self._refresh_undo_redo_labels()
 
     def _duplicate_frame(self) -> None:
         if self._sprite is None:
@@ -675,6 +698,7 @@ class MainWindow(QMainWindow):
         if self._timeline:
             self._timeline.set_active_frame(fi + 1)
             self._timeline.refresh()
+        self._refresh_undo_redo_labels()
 
     def _move_frame_left(self) -> None:
         if self._timeline:
@@ -717,6 +741,32 @@ class MainWindow(QMainWindow):
         self._canvas.onion_after = 1 if enabled else 0
         self._canvas.invalidate_cache()
 
+    def _prompt_onion_depth(self) -> None:
+        if self._canvas is None:
+            return
+        before, ok1 = QInputDialog.getInt(
+            self,
+            "Onion Skin Depth",
+            "Frames before active:",
+            self._canvas.onion_before,
+            0,
+            10,
+        )
+        if not ok1:
+            return
+        after, ok2 = QInputDialog.getInt(
+            self,
+            "Onion Skin Depth",
+            "Frames after active:",
+            self._canvas.onion_after,
+            0,
+            10,
+        )
+        if ok2:
+            self._canvas.onion_before = before
+            self._canvas.onion_after = after
+            self._canvas.invalidate_cache()
+
     # ------------------------------------------------------------------
     # Transform menu actions
     # ------------------------------------------------------------------
@@ -731,6 +781,7 @@ class MainWindow(QMainWindow):
         if self._canvas:
             self._canvas.invalidate_cache()
         self._unsaved = True
+        self._refresh_undo_redo_labels()
 
     def _flip_h(self) -> None:
         if self._sprite is None:
@@ -1001,6 +1052,63 @@ class MainWindow(QMainWindow):
         self._status_canvas.setText(f"{w}\u00d7{h}")
 
     # ------------------------------------------------------------------
+    # Palette import / export
+    # ------------------------------------------------------------------
+
+    def _import_palette(self) -> None:
+        """Import a palette file (.pal / .gpl / .hex / .txt) into the colour picker."""
+        if self._color_picker is None:
+            return
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Import Palette",
+            "",
+            "Palette files (*.pal *.gpl *.hex *.txt);;All files (*)",
+        )
+        if not path:
+            return
+        suffix = Path(path).suffix.lower()
+        try:
+            if suffix == ".gpl":
+                palette = Palette.from_gpl(path)
+            elif suffix in (".hex", ".txt"):
+                palette = Palette.from_hex_list(path)
+            else:
+                palette = Palette.from_jasc(path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Import Error", f"Could not load palette:\n{exc}"
+            )
+            return
+        self._color_picker.load_palette(list(palette))
+
+    def _export_palette(self) -> None:
+        """Export the current palette grid to a file (.pal / .gpl / .hex)."""
+        if self._color_picker is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(
+            self,
+            "Export Palette",
+            "",
+            "JASC-PAL (*.pal);;GIMP GPL (*.gpl);;Hex list (*.hex)",
+        )
+        if not path:
+            return
+        suffix = Path(path).suffix.lower()
+        palette = Palette(self._color_picker._palette_colors)
+        try:
+            if suffix == ".gpl":
+                palette.to_gpl(path)
+            elif suffix == ".hex":
+                palette.to_hex_list(path)
+            else:
+                palette.to_jasc(path)
+        except Exception as exc:
+            QMessageBox.critical(
+                self, "Export Error", f"Could not save palette:\n{exc}"
+            )
+
+    # ------------------------------------------------------------------
     # Phase 7: Copy / Paste
     # ------------------------------------------------------------------
 
@@ -1170,12 +1278,27 @@ class MainWindow(QMainWindow):
     # ------------------------------------------------------------------
 
     def _open_preferences(self) -> None:
+        old_w = self._settings.default_canvas_width
+        old_h = self._settings.default_canvas_height
         dlg = PreferencesDialog(self._settings, self)
         if dlg.exec():
             self._settings.save()
             self._reset_autosave_timer()
             # Re-apply shortcut bindings.
             self._build_shortcuts()
+            # QoL: if the default canvas size changed and the project has only
+            # one frame, immediately resize the current canvas to match.
+            new_w = self._settings.default_canvas_width
+            new_h = self._settings.default_canvas_height
+            if (
+                self._sprite is not None
+                and self._sprite.frame_count == 1
+                and (new_w != old_w or new_h != old_h)
+            ):
+                self._push_transform(CanvasResizeCommand(self._sprite, new_w, new_h))
+                self._status_canvas.setText(
+                    f"{self._sprite.width}\u00d7{self._sprite.height}"
+                )
 
     # ------------------------------------------------------------------
     # Tool factory

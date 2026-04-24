@@ -666,3 +666,123 @@ class TestMainWindowPhase8:
 
         w._unsaved = False
         w.close()
+
+    # ------------------------------------------------------------------
+    # QoL: resize canvas when default size changes and only 1 frame exists
+    # ------------------------------------------------------------------
+
+    def test_pref_resize_canvas_when_single_frame_and_size_changed(self, qapp):
+        """Accepting prefs with a new canvas size and exactly 1 frame
+        immediately resizes the current canvas to match."""
+        from unittest.mock import patch
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+        w.new_project(32, 32)  # establish known baseline independent of saved settings
+        assert w._sprite.frame_count == 1
+        assert w._sprite.width == 32
+
+        def fake_exec(dlg):
+            dlg._settings.default_canvas_width = 64
+            dlg._settings.default_canvas_height = 48
+            return True
+
+        with patch(
+            "spriter.ui.preferences.PreferencesDialog.exec", fake_exec
+        ), patch.object(w._settings, "save"):
+            w._open_preferences()
+
+        assert w._sprite.width == 64
+        assert w._sprite.height == 48
+        w._unsaved = False
+        w.close()
+
+    def test_pref_no_canvas_resize_when_size_unchanged(self, qapp):
+        """If the canvas size setting does not change, the canvas is left alone."""
+        from unittest.mock import patch
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+        old_w, old_h = w._sprite.width, w._sprite.height
+
+        def fake_exec(dlg):
+            # Size stays the same as current settings
+            return True
+
+        with patch(
+            "spriter.ui.preferences.PreferencesDialog.exec", fake_exec
+        ), patch.object(w._settings, "save"):
+            w._open_preferences()
+
+        assert w._sprite.width == old_w
+        assert w._sprite.height == old_h
+        w._unsaved = False
+        w.close()
+
+    def test_pref_no_canvas_resize_when_multiple_frames(self, qapp):
+        """Canvas is NOT resized when the project has more than one frame,
+        even if the default canvas size setting changes."""
+        from unittest.mock import patch
+        from spriter.commands.frame_ops import AddFrameCommand
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+        w.new_project(32, 32)  # establish known baseline independent of saved settings
+        w._stack.push(AddFrameCommand(w._sprite))
+        assert w._sprite.frame_count == 2
+
+        def fake_exec(dlg):
+            dlg._settings.default_canvas_width = 64
+            dlg._settings.default_canvas_height = 48
+            return True
+
+        with patch(
+            "spriter.ui.preferences.PreferencesDialog.exec", fake_exec
+        ), patch.object(w._settings, "save"):
+            w._open_preferences()
+
+        assert w._sprite.width == 32
+        assert w._sprite.height == 32
+        w._unsaved = False
+        w.close()
+
+    def test_pref_no_canvas_resize_when_dialog_cancelled(self, qapp):
+        """Cancelling the prefs dialog never resizes the canvas."""
+        from unittest.mock import patch
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+        old_w, old_h = w._sprite.width, w._sprite.height
+
+        def fake_exec(dlg):
+            return False  # Rejected / cancelled
+
+        with patch("spriter.ui.preferences.PreferencesDialog.exec", fake_exec):
+            w._open_preferences()
+
+        assert w._sprite.width == old_w
+        assert w._sprite.height == old_h
+        w._unsaved = False
+        w.close()
+
+    def test_pref_resize_updates_status_bar(self, qapp):
+        """After a canvas resize via prefs, the status bar reflects new size."""
+        from unittest.mock import patch
+        from spriter.ui.main_window import MainWindow
+
+        w = MainWindow()
+
+        def fake_exec(dlg):
+            dlg._settings.default_canvas_width = 16
+            dlg._settings.default_canvas_height = 24
+            return True
+
+        with patch(
+            "spriter.ui.preferences.PreferencesDialog.exec", fake_exec
+        ), patch.object(w._settings, "save"):
+            w._open_preferences()
+
+        assert "16" in w._status_canvas.text()
+        assert "24" in w._status_canvas.text()
+        w._unsaved = False
+        w.close()

@@ -158,24 +158,15 @@ class ColorPicker(QWidget):
         root.addLayout(hex_row)
 
         # ── Palette grid (first 16 standard web colours) ─────────────
-        palette_frame = QFrame()
-        palette_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        palette_grid = QGridLayout(palette_frame)
+        self._palette_frame = QFrame()
+        self._palette_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        palette_grid = QGridLayout(self._palette_frame)
         palette_grid.setSpacing(2)
         palette_grid.setContentsMargins(2, 2, 2, 2)
         self._palette_buttons: list = []
-        for i, (r, g, b) in enumerate(_DEFAULT_PALETTE):
-            btn = QToolButton()
-            btn.setFixedSize(20, 20)
-            btn.setStyleSheet(
-                f"background-color: rgb({r},{g},{b}); border: 1px solid #555;"
-            )
-            btn.clicked.connect(
-                lambda _, c=(r, g, b, 255): self._apply_palette_color(c)
-            )
-            palette_grid.addWidget(btn, i // 8, i % 8)
-            self._palette_buttons.append(btn)
-        root.addWidget(palette_frame)
+        self._palette_colors: list = [(r, g, b, 255) for r, g, b in _DEFAULT_PALETTE]
+        self._rebuild_palette_grid(self._palette_colors)
+        root.addWidget(self._palette_frame)
         root.addStretch()
 
         # Connect slider/spin changes
@@ -238,6 +229,38 @@ class ColorPicker(QWidget):
         if not self._editing_fg:
             self._refresh_controls()
         self.background_changed.emit(color)
+
+    def swap_colors(self) -> None:
+        """Swap the foreground and background colours."""
+        self._fg_color, self._bg_color = self._bg_color, self._fg_color
+        self._fg_swatch.color = self._fg_color
+        self._bg_swatch.color = self._bg_color
+        fg = (
+            self._fg_color.red(),
+            self._fg_color.green(),
+            self._fg_color.blue(),
+            self._fg_color.alpha(),
+        )
+        bg = (
+            self._bg_color.red(),
+            self._bg_color.green(),
+            self._bg_color.blue(),
+            self._bg_color.alpha(),
+        )
+        self.foreground_changed.emit(fg)
+        self.background_changed.emit(bg)
+        self._refresh_controls()
+
+    def load_palette(self, colors: list) -> None:
+        """Replace the palette grid with the given colour list.
+
+        Args:
+            colors: List of ``(R, G, B)`` or ``(R, G, B, A)`` tuples.
+        """
+        self._palette_colors = [
+            (c[0], c[1], c[2], c[3] if len(c) > 3 else 255) for c in colors
+        ]
+        self._rebuild_palette_grid(self._palette_colors)
 
     # ------------------------------------------------------------------
     # Internal
@@ -382,6 +405,26 @@ class ColorPicker(QWidget):
         finally:
             self._updating = False
         self._apply_color(color)
+
+    def _rebuild_palette_grid(self, colors: list) -> None:
+        """Clear and repopulate the palette button grid."""
+        layout = self._palette_frame.layout()
+        for btn in self._palette_buttons:
+            layout.removeWidget(btn)
+            btn.deleteLater()
+        self._palette_buttons.clear()
+        for i, color in enumerate(colors):
+            r, g, b = color[0], color[1], color[2]
+            a = color[3] if len(color) > 3 else 255
+            c: Color = (r, g, b, a)
+            btn = QToolButton()
+            btn.setFixedSize(20, 20)
+            btn.setStyleSheet(
+                f"background-color: rgb({r},{g},{b}); border: 1px solid #555;"
+            )
+            btn.clicked.connect(lambda _, col=c: self._apply_palette_color(col))
+            layout.addWidget(btn, i // 8, i % 8)
+            self._palette_buttons.append(btn)
 
     def _apply_palette_color(self, color: Color) -> None:
         qc = QColor(*color)

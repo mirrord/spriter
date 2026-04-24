@@ -31,6 +31,12 @@ def main() -> None:
 
     window = MainWindow()
     window.show()
+
+    # Open a file passed as a command-line argument (e.g. via "Open with…"
+    # or by dragging a file onto the executable).
+    if len(sys.argv) > 1:
+        window.open_project(sys.argv[1])
+
     sys.exit(app.exec())
 
 

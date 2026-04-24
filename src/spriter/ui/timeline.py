@@ -20,12 +20,13 @@ from __future__ import annotations
 
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, QPoint, pyqtSignal
 from PyQt6.QtGui import QColor, QPainter
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -61,6 +62,7 @@ class _FrameCell(QWidget):
 
     clicked = pyqtSignal(int)
     double_clicked = pyqtSignal(int)
+    right_clicked = pyqtSignal(int, object)  # (frame_index, QPoint global pos)
 
     _CELL_W = 48
     _CELL_H = 40
@@ -112,7 +114,10 @@ class _FrameCell(QWidget):
     # ------------------------------------------------------------------
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
-        self.clicked.emit(self.frame_index)
+        if event.button() == Qt.MouseButton.RightButton:
+            self.right_clicked.emit(self.frame_index, event.globalPosition().toPoint())
+        else:
+            self.clicked.emit(self.frame_index)
 
     def mouseDoubleClickEvent(self, event) -> None:  # type: ignore[override]
         self.double_clicked.emit(self.frame_index)
@@ -313,3 +318,36 @@ class TimelinePanel(QWidget):
         self._active_frame = to
         self.refresh()
         self.frame_selected.emit(self._active_frame)
+
+    def _on_cell_context_menu(self, frame_index: int, pos: object) -> None:
+        """Show a right-click context menu for the given frame cell."""
+        self._active_frame = frame_index
+        self._update_active_cell()
+        menu = QMenu(self)
+        menu.addAction("Duplicate Frame", self._duplicate_frame)
+        menu.addAction("Delete Frame", self._remove_frame)
+        menu.addSeparator()
+        menu.addAction(
+            "Set Duration\u2026",
+            lambda: self._on_cell_double_clicked(frame_index),
+        )
+        menu.addSeparator()
+        menu.addAction("Move Left", self._move_frame_left)
+        menu.addAction("Move Right", self._move_frame_right)
+        menu.exec(pos if isinstance(pos, QPoint) else QPoint())
+
+        def _on_cell_context_menu(self, frame_index: int, pos: object) -> None:
+            """Show a right-click context menu for the given frame cell."""
+            self._active_frame = frame_index
+            self._update_active_cell()
+            menu = QMenu(self)
+            menu.addAction("Duplicate Frame", self._duplicate_frame)
+            menu.addAction("Delete Frame", self._remove_frame)
+            menu.addSeparator()
+            menu.addAction(
+                "Set Duration\u2026", lambda: self._on_cell_double_clicked(frame_index)
+            )
+            menu.addSeparator()
+            menu.addAction("Move Left", self._move_frame_left)
+            menu.addAction("Move Right", self._move_frame_right)
+            menu.exec(pos if isinstance(pos, QPoint) else QPoint())

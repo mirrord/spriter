@@ -30,6 +30,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
     QHBoxLayout,
+    QInputDialog,
     QLabel,
     QListWidget,
     QListWidgetItem,
@@ -52,7 +53,7 @@ from ..commands.layer_ops import (
     MoveLayerCommand,
     RemoveLayerCommand,
 )
-from ..core.layer import BlendMode
+from ..core.layer import BlendMode, LayerRole
 from ..core.sprite import Sprite
 
 _BLEND_MODE_LABELS = {
@@ -259,7 +260,12 @@ class LayersPanel(QWidget):
 
             eye = "👁" if layer.visible else " "
             lock = "🔒" if layer.locked else " "
-            item = QListWidgetItem(icon, f"{eye} {lock}  {layer.name}")
+            role_tag = (
+                " [FG]"
+                if layer.role == LayerRole.FOREGROUND
+                else " [BG]" if layer.role == LayerRole.BACKGROUND else ""
+            )
+            item = QListWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
             item.setData(Qt.ItemDataRole.UserRole, li)  # store actual layer index
             self._list.addItem(item)
 
@@ -272,10 +278,19 @@ class LayersPanel(QWidget):
     # Layer actions
     # ------------------------------------------------------------------
 
+    def _next_layer_name(self) -> str:
+        """Return 'Layer N' where N is one more than the highest existing 'Layer N'."""
+        import re
+
+        max_n = 0
+        for layer in self._sprite.layers:
+            m = re.fullmatch(r"Layer\s+(\d+)", layer.name, re.IGNORECASE)
+            if m:
+                max_n = max(max_n, int(m.group(1)))
+        return f"Layer {max_n + 1}"
+
     def _add_layer(self) -> None:
-        cmd = AddLayerCommand(
-            self._sprite, name=f"Layer {self._sprite.layer_count + 1}"
-        )
+        cmd = AddLayerCommand(self._sprite, name=self._next_layer_name())
         self._stack.push(cmd)
         self._active_layer = self._sprite.layer_count - 1
         self.refresh()
@@ -314,6 +329,28 @@ class LayersPanel(QWidget):
         cmd = FlattenCommand(self._sprite)
         self._stack.push(cmd)
         self._active_layer = 0
+        self.refresh()
+        self.layers_modified.emit()
+
+    def _rename_layer(self) -> None:
+        if not (0 <= self._active_layer < self._sprite.layer_count):
+            return
+        layer = self._sprite.layers[self._active_layer]
+        name, ok = QInputDialog.getText(
+            self,
+            "Rename Layer",
+            "Layer name:",
+            text=layer.name,
+        )
+        if ok and name.strip():
+            self._sprite._layers[self._active_layer].name = name.strip()  # type: ignore[attr-defined]
+            self.refresh()
+            self.layers_modified.emit()
+
+    def _set_layer_role(self, role: LayerRole) -> None:
+        if not (0 <= self._active_layer < self._sprite.layer_count):
+            return
+        self._sprite._layers[self._active_layer].role = role  # type: ignore[attr-defined]
         self.refresh()
         self.layers_modified.emit()
 
@@ -359,6 +396,17 @@ class LayersPanel(QWidget):
         menu.addAction("Duplicate Layer", self._duplicate_layer)
         menu.addAction("Merge Down", self._merge_down)
         menu.addAction("Flatten", self._flatten)
+        menu.addSeparator()
+        menu.addAction("Rename Layer\u2026", self._rename_layer)
+        menu.addSeparator()
+        role_menu = menu.addMenu("Set Role")
+        role_menu.addAction("Normal", lambda: self._set_layer_role(LayerRole.NORMAL))
+        role_menu.addAction(
+            "Foreground", lambda: self._set_layer_role(LayerRole.FOREGROUND)
+        )
+        role_menu.addAction(
+            "Background", lambda: self._set_layer_role(LayerRole.BACKGROUND)
+        )
         menu.addSeparator()
         menu.addAction("Delete Layer", self._remove_layer)
         menu.exec(self._list.mapToGlobal(pos))

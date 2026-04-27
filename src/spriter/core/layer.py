@@ -19,6 +19,17 @@ class BlendMode(Enum):
     LIGHTEN = "lighten"
 
 
+class LayerRole(Enum):
+    """Semantic role of a layer.
+
+    Roles are informational metadata — they do not affect compositing order.
+    """
+
+    NORMAL = "normal"
+    FOREGROUND = "foreground"
+    BACKGROUND = "background"
+
+
 class Layer:
     """Stores per-layer metadata (no pixel data — pixels live in Cels).
 
@@ -28,6 +39,7 @@ class Layer:
         locked: When True, editing is blocked.
         opacity: Alpha multiplier in range 0–255.
         blend_mode: Compositing blend mode.
+        role: Semantic role (normal / foreground / background).
     """
 
     def __init__(
@@ -38,6 +50,7 @@ class Layer:
         locked: bool = False,
         opacity: int = 255,
         blend_mode: BlendMode = BlendMode.NORMAL,
+        role: LayerRole = LayerRole.NORMAL,
     ) -> None:
         if not (0 <= opacity <= 255):
             raise ValueError(f"opacity must be 0–255, got {opacity}")
@@ -46,10 +59,11 @@ class Layer:
         self.locked = locked
         self.opacity = opacity
         self.blend_mode = blend_mode
+        self.role = role
 
     def __repr__(self) -> str:
         return (
             f"Layer(name={self.name!r}, visible={self.visible}, "
             f"locked={self.locked}, opacity={self.opacity}, "
-            f"blend_mode={self.blend_mode!r})"
+            f"blend_mode={self.blend_mode!r}, role={self.role!r})"
         )

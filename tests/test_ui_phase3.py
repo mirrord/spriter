@@ -483,6 +483,24 @@ class TestMainWindow:
         assert window._sprite.height == 48
         window.close()
 
+    def test_new_project_does_not_duplicate_dock_widgets(self, qapp):
+        """Calling new_project() multiple times must not add extra dock widgets."""
+        from PyQt6.QtWidgets import QDockWidget
+        from spriter.ui.main_window import MainWindow
+
+        window = MainWindow()
+        initial_count = len(window.findChildren(QDockWidget))
+        assert initial_count > 0, "Expected at least one dock widget after init"
+
+        # Simulate File→New twice; each call must replace, not accumulate, docks.
+        window.new_project(16, 16)
+        assert len(window.findChildren(QDockWidget)) == initial_count
+
+        window.new_project(64, 64)
+        assert len(window.findChildren(QDockWidget)) == initial_count
+
+        window.close()
+
     def test_undo_action_shortcut(self, qapp):
         from PyQt6.QtGui import QKeySequence
         from spriter.ui.main_window import MainWindow

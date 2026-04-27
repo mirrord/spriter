@@ -18,10 +18,11 @@ frame_duration_changed(int, int)
 
 from __future__ import annotations
 
+import numpy as np
 from typing import List, Optional
 
-from PyQt6.QtCore import Qt, QPoint, pyqtSignal
-from PyQt6.QtGui import QColor, QPainter
+from PyQt6.QtCore import Qt, QPoint, QEvent, pyqtSignal
+from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
@@ -57,6 +58,7 @@ class _FrameCell(QWidget):
         frame_index: The frame this cell represents.
         duration_ms: Display duration of the frame in milliseconds.
         active: Whether this is the currently visible frame.
+        thumbnail: Optional pre-rendered QPixmap of the frame composite.
         parent: Optional Qt parent.
     """
 
@@ -64,20 +66,23 @@ class _FrameCell(QWidget):
     double_clicked = pyqtSignal(int)
     right_clicked = pyqtSignal(int, object)  # (frame_index, QPoint global pos)
 
-    _CELL_W = 48
-    _CELL_H = 40
+    _CELL_W = 56
+    _CELL_H = 60
+    _THUMB_SIZE = 40  # thumbnail display size in pixels
 
     def __init__(
         self,
         frame_index: int,
         duration_ms: int,
         active: bool = False,
+        thumbnail: Optional[QPixmap] = None,
         parent: Optional[QWidget] = None,
     ) -> None:
         super().__init__(parent)
         self.frame_index = frame_index
         self.duration_ms = duration_ms
         self.active = active
+        self.thumbnail = thumbnail
         self.setFixedSize(self._CELL_W, self._CELL_H)
         self.setToolTip(f"Frame {frame_index + 1}  ({duration_ms} ms)")
 
@@ -93,18 +98,45 @@ class _FrameCell(QWidget):
         border_color = QColor(200, 200, 200) if self.active else QColor(40, 40, 40)
         painter.setPen(border_color)
         painter.drawRect(0, 0, self._CELL_W - 1, self._CELL_H - 1)
-        # Frame number
+
+        # Frame thumbnail (centred in the upper portion)
+        thumb_y = 2
+        if self.thumbnail is not None:
+            scaled = self.thumbnail.scaled(
+                self._THUMB_SIZE,
+                self._THUMB_SIZE,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation,
+            )
+            tx = (self._CELL_W - scaled.width()) // 2
+            painter.drawPixmap(tx, thumb_y, scaled)
+        else:
+            # Placeholder grey square
+            painter.fillRect(
+                (self._CELL_W - self._THUMB_SIZE) // 2,
+                thumb_y,
+                self._THUMB_SIZE,
+                self._THUMB_SIZE,
+                QColor(90, 90, 90),
+            )
+
+        # Frame number (top-left, small)
         painter.setPen(QColor(240, 240, 240))
-        painter.drawText(
-            self.rect(),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignTop,
-            str(self.frame_index + 1),
-        )
-        # Duration (ms)
+        from PyQt6.QtCore import QRect, QFont
+
+        small_font = QFont()
+        small_font.setPointSize(7)
+        painter.setFont(small_font)
+        painter.drawText(2, 2, self._CELL_W - 2, 12, 0, str(self.frame_index + 1))
+
+        # Duration (ms) — bottom strip
         painter.setPen(QColor(180, 180, 180))
+        from PyQt6.QtCore import QRect
+
+        bot_rect = self.rect().adjusted(0, self._CELL_H - 14, 0, 0)
         painter.drawText(
-            self.rect(),
-            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignBottom,
+            bot_rect,
+            Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter,
             f"{self.duration_ms}ms",
         )
         painter.end()
@@ -154,6 +186,12 @@ class TimelinePanel(QWidget):
         self._active_frame: int = 0
         self._cells: List[_FrameCell] = []
 
+        # Drag-to-reorder state
+        self._drag_source: Optional[int] = None  # frame index being dragged
+        self._drag_start_pos: Optional[QPoint] = None
+        self._dragging: bool = False
+        self._drag_indicator: Optional[int] = None  # insert-before index
+
         self._build_ui()
         self.refresh()
 
@@ -185,9 +223,17 @@ class TimelinePanel(QWidget):
         self._cells.clear()
 
         for fi, frame in enumerate(self._sprite.frames):
-            cell = _FrameCell(fi, frame.duration_ms, active=(fi == self._active_frame))
+            thumbnail = self._make_thumbnail(fi)
+            cell = _FrameCell(
+                fi,
+                frame.duration_ms,
+                active=(fi == self._active_frame),
+                thumbnail=thumbnail,
+            )
             cell.clicked.connect(self._on_cell_clicked)
             cell.double_clicked.connect(self._on_cell_double_clicked)
+            cell.right_clicked.connect(self._on_cell_context_menu)
+            cell.installEventFilter(self)
             self._strip_layout.addWidget(cell)
             self._cells.append(cell)
 
@@ -336,18 +382,128 @@ class TimelinePanel(QWidget):
         menu.addAction("Move Right", self._move_frame_right)
         menu.exec(pos if isinstance(pos, QPoint) else QPoint())
 
-        def _on_cell_context_menu(self, frame_index: int, pos: object) -> None:
-            """Show a right-click context menu for the given frame cell."""
-            self._active_frame = frame_index
-            self._update_active_cell()
-            menu = QMenu(self)
-            menu.addAction("Duplicate Frame", self._duplicate_frame)
-            menu.addAction("Delete Frame", self._remove_frame)
-            menu.addSeparator()
-            menu.addAction(
-                "Set Duration\u2026", lambda: self._on_cell_double_clicked(frame_index)
+    # ------------------------------------------------------------------
+    # Thumbnail helper
+    # ------------------------------------------------------------------
+
+    def _make_thumbnail(self, frame_index: int) -> Optional[QPixmap]:
+        """Composite *frame_index* and return a small QPixmap thumbnail."""
+        if (
+            self._sprite.frame_count == 0
+            or self._sprite.layer_count == 0
+            or self._sprite.width == 0
+            or self._sprite.height == 0
+        ):
+            return None
+        try:
+            from ..core.compositor import composite_frame
+
+            fi = min(frame_index, self._sprite.frame_count - 1)
+            arr = composite_frame(self._sprite, fi)
+            arr = np.ascontiguousarray(arr)
+            h, w = arr.shape[:2]
+            img = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
+            sz = _FrameCell._THUMB_SIZE
+            scaled = img.scaled(
+                sz,
+                sz,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.FastTransformation,
             )
-            menu.addSeparator()
-            menu.addAction("Move Left", self._move_frame_left)
-            menu.addAction("Move Right", self._move_frame_right)
-            menu.exec(pos if isinstance(pos, QPoint) else QPoint())
+            return QPixmap.fromImage(scaled)
+        except Exception:
+            return None
+
+    # ------------------------------------------------------------------
+    # Drag-to-reorder event filter
+    # ------------------------------------------------------------------
+
+    _DRAG_THRESHOLD = 8  # Manhattan distance before drag activates
+
+    def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
+        """Intercept mouse events on _FrameCell widgets for drag reorder."""
+        if not isinstance(obj, _FrameCell):
+            return False
+
+        et = event.type()
+
+        if et == QEvent.Type.MouseButtonPress:
+            if event.button() == Qt.MouseButton.LeftButton:
+                self._drag_source = obj.frame_index
+                self._drag_start_pos = event.globalPosition().toPoint()
+                self._dragging = False
+            return False  # let normal click/press propagate
+
+        if et == QEvent.Type.MouseMove:
+            if (
+                self._drag_source is not None
+                and self._drag_start_pos is not None
+                and (event.buttons() & Qt.MouseButton.LeftButton)
+            ):
+                delta = event.globalPosition().toPoint() - self._drag_start_pos
+                if (
+                    not self._dragging
+                    and delta.manhattanLength() >= self._DRAG_THRESHOLD
+                ):
+                    self._dragging = True
+                if self._dragging:
+                    # Find the cell under the current global position.
+                    local = self._strip_widget.mapFromGlobal(
+                        event.globalPosition().toPoint()
+                    )
+                    target = self._frame_index_at(local)
+                    if target != self._drag_indicator:
+                        self._drag_indicator = target
+                        self._update_drag_highlights()
+                    return True  # consume while dragging
+            return False
+
+        if et == QEvent.Type.MouseButtonRelease:
+            if event.button() == Qt.MouseButton.LeftButton and self._dragging:
+                src = self._drag_source
+                local = self._strip_widget.mapFromGlobal(
+                    event.globalPosition().toPoint()
+                )
+                dst = self._frame_index_at(local)
+                self._drag_source = None
+                self._drag_start_pos = None
+                self._dragging = False
+                self._drag_indicator = None
+                self._clear_drag_highlights()
+                if dst is not None and src is not None and dst != src:
+                    cmd = MoveFrameCommand(self._sprite, src, dst)
+                    self._stack.push(cmd)
+                    self._active_frame = dst
+                    self.refresh()
+                    self.frame_selected.emit(self._active_frame)
+                return True  # consume the release that ended the drag
+            # Clean up state on any release
+            self._drag_source = None
+            self._drag_start_pos = None
+            self._dragging = False
+            self._drag_indicator = None
+            return False
+
+        return False
+
+    def _frame_index_at(self, strip_local: QPoint) -> Optional[int]:
+        """Return the frame index of the cell under *strip_local* (strip widget coords)."""
+        child = self._strip_widget.childAt(strip_local)
+        if isinstance(child, _FrameCell):
+            return child.frame_index
+        return None
+
+    def _update_drag_highlights(self) -> None:
+        """Visually highlight the drag target cell."""
+        for cell in self._cells:
+            target = self._drag_indicator
+            cell.setStyleSheet(
+                "background-color: rgb(180, 100, 30);"
+                if cell.frame_index == target and target is not None
+                else ""
+            )
+
+    def _clear_drag_highlights(self) -> None:
+        """Remove drag highlighting from all cells."""
+        for cell in self._cells:
+            cell.setStyleSheet("")

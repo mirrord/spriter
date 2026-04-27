@@ -112,6 +112,14 @@ class Tool(ABC):
         """
         return None
 
+    def cancel(self) -> None:
+        """Cancel any in-progress interaction (stroke or selection drag).
+
+        Safe to call at any time; clears transient stroke state.
+        """
+        self._before = None
+        self._working = None
+
     # ------------------------------------------------------------------
     # Stroke helpers
     # ------------------------------------------------------------------

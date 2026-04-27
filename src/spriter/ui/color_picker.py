@@ -701,6 +701,8 @@ class ColorPicker(QWidget):
             ):
                 slider.blockSignals(False)
                 spin.blockSignals(False)
+            # Update the SV square gradient when the hue changes.
+            self._sv_square.set_hue(h)
         finally:
             self._updating = False
         self._apply_color(color)

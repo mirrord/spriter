@@ -253,15 +253,21 @@ class MainWindow(QMainWindow):
         """(Re)create all dock widgets and the central canvas."""
         assert self._sprite is not None
 
+        # Remove any existing dock widgets before recreating them so that
+        # repeated calls (e.g. File→New) don't accumulate duplicate panels.
+        for dock in list(self.findChildren(QDockWidget)):
+            self.removeDockWidget(dock)
+            dock.setParent(None)  # type: ignore[arg-type]
+            dock.deleteLater()
+
         # ── Canvas ───────────────────────────────────────────────────
         self._canvas = CanvasWidget(self._sprite, self._stack)
         self._canvas.cursor_moved.connect(self._on_cursor_moved)
         self._canvas.zoom_changed.connect(
             lambda z: self._status_zoom.setText(f"{int(z * 100)}%")
         )
+        self._canvas.color_sampled.connect(self._on_color_sampled)
         self.setCentralWidget(self._canvas)
-
-        # ── Tool bar (left dock) ──────────────────────────────────────
         self._toolbar = ToolBar()
         self._toolbar.tool_changed.connect(self._on_tool_changed)
         self._toolbar.brush_size_changed.connect(self._on_brush_size_changed)
@@ -365,6 +371,7 @@ class MainWindow(QMainWindow):
         self._add_action(view_menu, "Zoom &In", self._zoom_in, "Ctrl+=")
         self._add_action(view_menu, "Zoom &Out", self._zoom_out, "Ctrl+-")
         self._add_action(view_menu, "&Fit to Window", self._fit, "Ctrl+Shift+H")
+        self._add_action(view_menu, "&Center View", self._center_view, "Ctrl+Shift+C")
         view_menu.addSeparator()
         self._grid_action = self._add_action(
             view_menu, "Show &Grid", self._toggle_grid, "Ctrl+G", checkable=True
@@ -381,6 +388,14 @@ class MainWindow(QMainWindow):
         layer_menu.addSeparator()
         self._add_action(layer_menu, "Merge &Down", self._merge_down, "Ctrl+E")
         self._add_action(layer_menu, "&Flatten Image", self._flatten)
+        layer_menu.addSeparator()
+        self._add_action(layer_menu, "Re&name Layer\u2026", self._rename_layer)
+        layer_menu.addSeparator()
+        role_menu = QMenu("Set &Role", self)
+        self._add_action(role_menu, "&Normal", self._set_layer_role_normal)
+        self._add_action(role_menu, "&Foreground", self._set_layer_role_foreground)
+        self._add_action(role_menu, "&Background", self._set_layer_role_background)
+        layer_menu.addMenu(role_menu)
 
         # ── Frame ─────────────────────────────────────────────────────
         frame_menu = mb.addMenu("Fr&ame")
@@ -546,11 +561,17 @@ class MainWindow(QMainWindow):
         if self._canvas and self._canvas._tool:
             self._canvas._tool.foreground = color
 
+    def _on_color_sampled(self, color: tuple) -> None:
+        """Update the color picker when a tool (e.g. eyedropper) samples a pixel."""
+        if self._color_picker:
+            self._color_picker.foreground = color
+
     def _on_active_layer_changed(self, layer_idx: int) -> None:
         if self._canvas:
             self._canvas.active_layer = layer_idx
             if self._canvas._tool:
                 self._canvas._tool.layer_index = layer_idx
+                self._canvas._tool.cancel()
         if self._sprite:
             self._sprite.clear_selection()
             if self._canvas:
@@ -559,6 +580,11 @@ class MainWindow(QMainWindow):
     def _on_layers_modified(self) -> None:
         if self._canvas:
             self._canvas.invalidate_cache()
+            if self._layers_panel:
+                new_layer = self._layers_panel.active_layer
+                self._canvas.active_layer = new_layer
+                if self._canvas._tool:
+                    self._canvas._tool.layer_index = new_layer
         if self._timeline:
             self._timeline.refresh()
         self._unsaved = True
@@ -636,6 +662,10 @@ class MainWindow(QMainWindow):
         if self._canvas:
             self._canvas.fit_to_window()
 
+    def _center_view(self) -> None:
+        if self._canvas:
+            self._canvas.center_view()
+
     def _toggle_grid(self) -> None:
         if self._canvas:
             self._canvas.show_grid = self._grid_action.isChecked()
@@ -660,6 +690,28 @@ class MainWindow(QMainWindow):
     def _flatten(self) -> None:
         if self._layers_panel:
             self._layers_panel._flatten()
+
+    def _rename_layer(self) -> None:
+        if self._layers_panel:
+            self._layers_panel._rename_layer()
+
+    def _set_layer_role_foreground(self) -> None:
+        if self._layers_panel:
+            from ..core.layer import LayerRole
+
+            self._layers_panel._set_layer_role(LayerRole.FOREGROUND)
+
+    def _set_layer_role_background(self) -> None:
+        if self._layers_panel:
+            from ..core.layer import LayerRole
+
+            self._layers_panel._set_layer_role(LayerRole.BACKGROUND)
+
+    def _set_layer_role_normal(self) -> None:
+        if self._layers_panel:
+            from ..core.layer import LayerRole
+
+            self._layers_panel._set_layer_role(LayerRole.NORMAL)
 
     def _add_frame(self) -> None:
         if self._sprite is None:

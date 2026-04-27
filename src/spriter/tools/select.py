@@ -65,6 +65,12 @@ class RectSelectTool(Tool):
         x1, y1 = self._current
         return (min(x0, x1), min(y0, y1), max(x0, x1), max(y0, y1))
 
+    def cancel(self) -> None:
+        """Cancel an in-progress selection drag without committing."""
+        self._start = None
+        self._current = None
+        self._before_mask = None
+
     # These tools don't draw pixels, so stroke helpers are unused.
     def _begin_stroke(self):  # type: ignore[override]
         raise NotImplementedError("Selection tools do not use _begin_stroke")

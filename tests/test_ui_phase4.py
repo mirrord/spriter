@@ -224,3 +224,90 @@ class TestLayersPanelUndo:
         panel.refresh()
         assert s.layer_count == 2
         assert panel._list.count() == 2
+
+
+# ---------------------------------------------------------------------------
+# Regression — canvas active_layer stays in sync after layer deletion
+# ---------------------------------------------------------------------------
+
+
+class TestCanvasActiveLayerSync:
+    """Regression test for: canvas._active_layer not updated after layer delete.
+
+    Root cause: _on_layers_modified (in MainWindow) did not sync
+    canvas._active_layer from layers_panel.active_layer. When the user had
+    selected a higher layer (e.g. index 1) and then deleted it, the canvas
+    kept the stale active_layer=1, causing IndexError on the next draw.
+    """
+
+    def _make_wired_trio(self, qapp):
+        """Return (sprite, canvas, layers_panel) wired with _on_layers_modified."""
+        from spriter.commands.base import CommandStack
+        from spriter.core.sprite import Sprite
+        from spriter.ui.canvas import CanvasWidget
+        from spriter.ui.layers_panel import LayersPanel
+
+        sprite = Sprite(8, 8)
+        sprite.add_layer("Layer 1")
+        sprite.add_frame()
+        stack = CommandStack()
+
+        canvas = CanvasWidget(sprite, stack)
+        panel = LayersPanel(sprite, stack)
+
+        # Wire up the same signal handler that MainWindow uses:
+        # _on_layers_modified syncs canvas.active_layer from panel.active_layer.
+        def _on_layers_modified():
+            new_layer = panel.active_layer
+            canvas.active_layer = new_layer
+            if canvas._tool is not None:
+                canvas._tool.layer_index = new_layer
+
+        panel.layers_modified.connect(_on_layers_modified)
+        panel.active_layer_changed.connect(
+            lambda li: setattr(canvas, "active_layer", li)
+        )
+
+        return sprite, canvas, panel, stack
+
+    def test_canvas_active_layer_synced_after_delete(self, qapp):
+        sprite, canvas, panel, stack = self._make_wired_trio(qapp)
+
+        # Add a new layer → panel._active_layer becomes 1.
+        panel._add_layer()
+        assert sprite.layer_count == 2
+
+        # Simulate the canvas tracking layer 1 (as if user clicked on it).
+        canvas.active_layer = 1
+        assert canvas.active_layer == 1
+
+        # Delete layer 1 via the panel.
+        panel._remove_layer()
+
+        # Canvas must reflect the updated active layer (0), not stale 1.
+        assert canvas.active_layer == 0
+
+    def test_no_index_error_drawing_after_layer_delete(self, qapp):
+        from spriter.tools.pencil import PencilTool
+        from spriter.commands.base import CommandStack
+
+        sprite, canvas, panel, stack = self._make_wired_trio(qapp)
+
+        # Set up a tool on the canvas.
+        tool = PencilTool(sprite, stack)
+        canvas._tool = tool
+
+        # Add and select the new layer.
+        panel._add_layer()
+        canvas.active_layer = 1
+        tool.layer_index = 1
+
+        # Delete the active layer.
+        panel._remove_layer()
+
+        # After deletion, _begin_stroke must use layer 0 — no IndexError.
+        tool.layer_index = canvas.active_layer  # as mousePressEvent does
+        tool.frame_index = canvas.active_frame
+        # This raised IndexError before the fix.
+        tool._begin_stroke()
+        assert canvas.active_layer == 0

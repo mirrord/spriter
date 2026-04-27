@@ -35,6 +35,8 @@ class CanvasWidget(QWidget):
     cursor_moved = pyqtSignal(int, int)
     # Emitted whenever the zoom level changes.
     zoom_changed = pyqtSignal(float)
+    # Emitted when a tool samples a color (e.g. eyedropper); carries (r, g, b, a).
+    color_sampled = pyqtSignal(object)
 
     # Supported discrete zoom levels (factor relative to 1 pixel = 1 px).
     ZOOM_LEVELS = (1, 2, 4, 8, 16, 32, 48, 64)
@@ -157,6 +159,11 @@ class CanvasWidget(QWidget):
         h_ratio = self.height() / self._sprite.height
         self.zoom = min(w_ratio, h_ratio)
         self._pan = QPointF(0.0, 0.0)
+
+    def center_view(self) -> None:
+        """Reset pan so the canvas is centered in the widget (zoom unchanged)."""
+        self._pan = QPointF(0.0, 0.0)
+        self.update()
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -403,11 +410,24 @@ class CanvasWidget(QWidget):
             if 0 <= cx < self._sprite.width and 0 <= cy < self._sprite.height:
                 self._tool.layer_index = self._active_layer
                 self._tool.frame_index = self._active_frame
+                _prev_fg = self._tool.foreground
                 self._tool.on_press(cx, cy)
+                if self._tool.foreground != _prev_fg:
+                    self.color_sampled.emit(self._tool.foreground)
                 for mx, my in self._mirror_point(cx, cy)[1:]:
                     if 0 <= mx < self._sprite.width and 0 <= my < self._sprite.height:
                         self._tool.on_press(mx, my)
                 self.invalidate_cache()
+        elif event.button() == Qt.MouseButton.RightButton:
+            # Right-click cancels any active selection.
+            if self._sprite.selection_mask is not None or (
+                self._tool is not None
+                and self._tool.selection_preview_rect() is not None
+            ):
+                self._sprite.clear_selection()
+                if self._tool is not None:
+                    self._tool.cancel()
+                self.update()
 
     def mouseMoveEvent(self, event) -> None:  # type: ignore[override]
         pos = QPointF(event.pos())
@@ -421,7 +441,10 @@ class CanvasWidget(QWidget):
             self._pan_last = pos
             self.update()
         elif (event.buttons() & Qt.MouseButton.LeftButton) and self._tool is not None:
+            _prev_fg = self._tool.foreground
             self._tool.on_drag(cx, cy)
+            if self._tool.foreground != _prev_fg:
+                self.color_sampled.emit(self._tool.foreground)
             for mx, my in self._mirror_point(cx, cy)[1:]:
                 if 0 <= mx < self._sprite.width and 0 <= my < self._sprite.height:
                     self._tool.on_drag(mx, my)
@@ -454,6 +477,16 @@ class CanvasWidget(QWidget):
         elif key == Qt.Key.Key_0:
             self.zoom = 1.0
             self._pan = QPointF(0.0, 0.0)
+        elif key == Qt.Key.Key_Escape:
+            # ESC cancels any active selection.
+            if self._sprite.selection_mask is not None or (
+                self._tool is not None
+                and self._tool.selection_preview_rect() is not None
+            ):
+                self._sprite.clear_selection()
+                if self._tool is not None:
+                    self._tool.cancel()
+                self.update()
         else:
             super().keyPressEvent(event)
 

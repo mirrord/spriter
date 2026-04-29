@@ -185,6 +185,13 @@ class Sprite:
         else:
             self._frames.insert(index, frame)
         frame_idx = self._frames.index(frame)
+        # Shift existing cels at frame_idx and beyond up by one to make room.
+        if frame_idx < len(self._frames) - 1:
+            new_cels: Dict[CelKey, Cel] = {}
+            for (li, fi), cel in self._cels.items():
+                new_fi = fi if fi < frame_idx else fi + 1
+                new_cels[(li, new_fi)] = cel
+            self._cels = new_cels
         # Blank cels for every existing layer.
         for layer_idx in range(len(self._layers)):
             self._cels[(layer_idx, frame_idx)] = Cel(self._blank_pixels())

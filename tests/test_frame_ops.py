@@ -69,6 +69,23 @@ class TestAddFrameCommand:
         cmd = AddFrameCommand(s)
         assert "Frame" in cmd.description
 
+    def test_insert_mid_does_not_clear_last_frame(self):
+        """Regression: inserting a frame mid-timeline must not blank out the
+        last frame's cel data (bug: selecting frame 2 of 4, hitting New Frame
+        cleared frame 4's content)."""
+        s = _make_sprite(1, 4)
+        color_last = [255, 0, 0, 255]
+        _fill(s, 0, 3, color_last)  # paint frame 4 (index 3) red
+
+        stack = CommandStack()
+        stack.push(AddFrameCommand(s, index=2))  # insert after frame 2
+
+        assert s.frame_count == 5
+        # Old frame 4 (index 3) is now at index 4 — must still be red.
+        cel = s.get_cel(0, 4)
+        assert cel.pixels is not None
+        assert np.all(cel.pixels == np.array(color_last, dtype=np.uint8))
+
 
 class TestRemoveFrameCommand:
     def test_execute_removes_frame(self):

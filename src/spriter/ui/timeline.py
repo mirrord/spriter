@@ -45,7 +45,6 @@ from ..commands.frame_ops import (
 )
 from ..core.sprite import Sprite
 
-
 # ---------------------------------------------------------------------------
 # Frame cell widget
 # ---------------------------------------------------------------------------
@@ -122,7 +121,8 @@ class _FrameCell(QWidget):
 
         # Frame number (top-left, small)
         painter.setPen(QColor(240, 240, 240))
-        from PyQt6.QtCore import QRect, QFont
+        from PyQt6.QtCore import QRect
+        from PyQt6.QtGui import QFont
 
         small_font = QFont()
         small_font.setPointSize(7)

@@ -26,7 +26,6 @@ a = Analysis(
         'PIL.IcoImagePlugin',
         'PIL.BmpImagePlugin',
         # NumPy internals that are often missed
-        'numpy.core._methods',
         'numpy.lib.format',
         # Spriter internal packages (src layout requires explicit listing)
         'spriter',

@@ -68,6 +68,7 @@ from ..tools.ellipse import EllipseTool
 from ..tools.eraser import EraserTool
 from ..tools.eyedropper import EyedropperTool
 from ..tools.fill import FillTool
+from ..tools.contiguous_delete import ContiguousDeleteTool
 from ..tools.line import LineTool
 from ..tools.move import MoveTool
 from ..tools.pencil import PencilTool
@@ -1592,6 +1593,7 @@ class MainWindow(QMainWindow):
             "rectangle": RectangleTool,
             "ellipse": EllipseTool,
             "fill": FillTool,
+            "contiguous_delete": ContiguousDeleteTool,
             "eyedropper": EyedropperTool,
             "select": RectSelectTool,
             "move": MoveTool,

@@ -29,7 +29,6 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-
 # Ordered list of (name, label) for each tool button.
 _TOOLS = [
     ("pencil", "✏ Pencil"),
@@ -38,6 +37,7 @@ _TOOLS = [
     ("rectangle", "□ Rect"),
     ("ellipse", "○ Ellipse"),
     ("fill", "⛽ Fill"),
+    ("contiguous_delete", "✂ C-Del"),
     ("eyedropper", "🔍 Eyedrop"),
     ("select", "⬚ Select"),
     ("move", "✥ Move"),

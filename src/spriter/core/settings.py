@@ -69,6 +69,7 @@ class Settings:
         "rectangle": "R",
         "ellipse": "O",
         "fill": "G",
+        "contiguous_delete": "D",
         "eyedropper": "I",
         "select": "S",
         "move": "M",

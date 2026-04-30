@@ -15,7 +15,7 @@ A pixel-art sprite editor built with Python and PyQt6. Spriter provides a focuse
 - **Blend modes** — Normal, Multiply, Screen, Overlay, Darken, Lighten (Porter-Duff alpha compositing)
 - **Color picker** — SV-square + hue-strip gradient picker; foreground/background swatches with swap (`X`); HSV sliders, RGB spinboxes, hex input; 16-color palette grid; 16-slot recent-colors row; palette import/export (JASC-PAL, GIMP GPL, hex); right-click palette slots to set or delete entries
 - **Animation** — frame timeline with per-frame duration, animation tags (named ranges with loop/ping-pong/one-shot modes), real-time preview window, onion skinning (configurable depth and opacity), drag-to-reorder frames, right-click timeline menu
-- **Transforms** — flip H/V, rotate 90°/180°, scale canvas, crop to selection, shift/wrap, outline non-transparent pixels, replace color, brightness/contrast/hue-saturation adjustments, scale selection
+- **Transforms** — flip H/V, rotate 90°/180°, scale canvas, crop to selection, autocrop (shrink canvas to opaque-pixel bbox across all layers/frames), shift/wrap, outline non-transparent pixels, replace color, brightness/contrast/hue-saturation adjustments, scale selection
 - **Undo/redo** — configurable history (default 100 levels) with labeled action names, covering all drawing, layer, and transform operations
 - **Project files** — `.spriter` format (JSON manifest with embedded PNG cel data)
 - **Export** — PNG (single frame or all frames), animated GIF, sprite sheets (horizontal/vertical/grid) with JSON atlas, ICO/cursor, palette files

@@ -30,6 +30,8 @@ class MoveTool(Tool):
         self._start: Optional[Tuple[int, int]] = None
         self._floating: Optional[np.ndarray] = None  # pixels being moved
         self._background: Optional[np.ndarray] = None  # layer minus floating pixels
+        self._selection_before: Optional[np.ndarray] = None  # original selection
+        self._move_mask: Optional[np.ndarray] = None  # mask of moved pixels
 
     def on_press(self, x: int, y: int) -> None:
         self._begin_stroke()
@@ -40,8 +42,11 @@ class MoveTool(Tool):
         sel = self._sprite.selection_mask
         if sel is not None:
             move_mask = sel
+            self._selection_before = sel.copy()
         else:
             move_mask = np.ones((h, w), dtype=bool)
+            self._selection_before = None
+        self._move_mask = move_mask.copy()
 
         # Cut the floating pixels out of the source.
         self._floating = np.zeros((h, w, 4), dtype=np.uint8)
@@ -66,6 +71,9 @@ class MoveTool(Tool):
         dy = y - self._start[1]
         self._working[:] = self._background
         _paste_offset(self._working, self._floating, dx, dy)
+        # Live-update the selection marquee so it follows the moved pixels.
+        if self._selection_before is not None:
+            self._sprite.selection_mask = _shift_mask(self._selection_before, dx, dy)
 
     def on_release(self, x: int, y: int) -> None:
         if (
@@ -79,33 +87,78 @@ class MoveTool(Tool):
         dy = y - self._start[1]
         self._working[:] = self._background
         _paste_offset(self._working, self._floating, dx, dy)
+        # Restore the original selection so the command records a correct
+        # before-state; the composite will set the shifted mask on execute.
+        shifted_selection: Optional[np.ndarray] = None
+        if self._selection_before is not None:
+            shifted_selection = _shift_mask(self._selection_before, dx, dy)
+            self._sprite.selection_mask = self._selection_before.copy()
         # Commit directly — do NOT use _commit_stroke because that would
         # incorrectly re-apply the selection mask (the moved pixels land
         # *outside* the original selection region).
-        self._direct_commit("Move")
+        self._direct_commit("Move", shifted_selection)
         self._start = None
         self._floating = None
         self._background = None
+        self._selection_before = None
+        self._move_mask = None
 
-    def _direct_commit(self, description: str) -> None:
-        """Push a DrawCelCommand without applying selection-mask filtering."""
+    def _direct_commit(
+        self,
+        description: str,
+        shifted_selection: Optional[np.ndarray] = None,
+    ) -> None:
+        """Push a DrawCelCommand without applying selection-mask filtering.
+
+        If a selection was active when the move began, the new (shifted)
+        selection mask is bundled into a composite command so undo/redo
+        restores both the pixels and the marquee position atomically.
+        """
         if self._before is None or self._working is None:
             return
-        from ..commands.draw import DrawCelCommand
+        from ..commands.base import CompositeCommand
+        from ..commands.draw import DrawCelCommand, SetSelectionCommand
 
-        if np.array_equal(self._before, self._working):
+        pixels_changed = not np.array_equal(self._before, self._working)
+        selection_changed = (
+            self._selection_before is not None
+            and shifted_selection is not None
+            and not np.array_equal(self._selection_before, shifted_selection)
+        )
+
+        if not pixels_changed and not selection_changed:
             self._before = self._working = None
             return
-        cmd = DrawCelCommand(
-            self._sprite,
-            self.layer_index,
-            self.frame_index,
-            self._before,
-            self._working,
-            description,
-        )
-        self._sprite.set_cel_pixels(self.layer_index, self.frame_index, self._working)
-        self._stack.push(cmd, execute=False)
+
+        commands = []
+        if pixels_changed:
+            commands.append(
+                DrawCelCommand(
+                    self._sprite,
+                    self.layer_index,
+                    self.frame_index,
+                    self._before,
+                    self._working,
+                    description,
+                )
+            )
+            self._sprite.set_cel_pixels(
+                self.layer_index, self.frame_index, self._working
+            )
+        if selection_changed:
+            commands.append(
+                SetSelectionCommand(
+                    self._sprite, self._selection_before, shifted_selection
+                )
+            )
+            self._sprite.selection_mask = (
+                shifted_selection.copy() if shifted_selection is not None else None
+            )
+
+        if len(commands) == 1:
+            self._stack.push(commands[0], execute=False)
+        else:
+            self._stack.push(CompositeCommand(commands, description), execute=False)
         self._before = self._working = None
 
 
@@ -151,3 +204,29 @@ def _paste_offset(dst: np.ndarray, src: np.ndarray, dx: int, dy: int) -> None:
     result = np.concatenate([out_rgb, out_a * 255.0], axis=-1)
 
     dst[dy0:dy1, dx0:dx1] = np.clip(result, 0, 255).astype(np.uint8)
+
+
+def _shift_mask(mask: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """Return a copy of *mask* translated by ``(dx, dy)``.
+
+    Pixels shifted off the canvas are dropped; vacated regions are False.
+
+    Args:
+        mask: Boolean mask of shape ``(H, W)``.
+        dx: Horizontal offset (positive = right).
+        dy: Vertical offset (positive = down).
+    """
+    h, w = mask.shape
+    out = np.zeros_like(mask)
+    sx0 = max(0, -dx)
+    sy0 = max(0, -dy)
+    sx1 = min(w, w - dx)
+    sy1 = min(h, h - dy)
+    if sx1 <= sx0 or sy1 <= sy0:
+        return out
+    dx0 = max(0, dx)
+    dy0 = max(0, dy)
+    dx1 = dx0 + (sx1 - sx0)
+    dy1 = dy0 + (sy1 - sy0)
+    out[dy0:dy1, dx0:dx1] = mask[sy0:sy1, sx0:sx1]
+    return out

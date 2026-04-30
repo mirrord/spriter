@@ -616,3 +616,245 @@ class TestMainWindowTransforms:
         assert win._sprite.width == 16
         win._unsaved = False
         win.close()
+
+# ---------------------------------------------------------------------------
+# InvertColorsCommand
+# ---------------------------------------------------------------------------
+
+
+class TestInvertColorsCommand:
+    def test_invert_rgb_only(self):
+        from spriter.commands.transform import InvertColorsCommand
+
+        pixels = np.zeros((2, 2, 4), dtype=np.uint8)
+        pixels[0, 0] = (10, 20, 30, 255)
+        pixels[0, 1] = (200, 100, 50, 128)
+        s = _sprite_with_pixels(pixels.copy())
+        InvertColorsCommand(s, 0, 0).execute()
+        result = _get_pixels(s)
+        assert tuple(result[0, 0]) == (245, 235, 225, 255)
+        assert tuple(result[0, 1]) == (55, 155, 205, 128)
+
+    def test_transparent_pixels_untouched(self):
+        from spriter.commands.transform import InvertColorsCommand
+
+        pixels = np.zeros((2, 2, 4), dtype=np.uint8)
+        pixels[0, 0] = (10, 20, 30, 255)
+        # (0,1) stays fully transparent
+        s = _sprite_with_pixels(pixels.copy())
+        InvertColorsCommand(s, 0, 0).execute()
+        result = _get_pixels(s)
+        assert tuple(result[0, 1]) == (0, 0, 0, 0)
+
+    def test_respects_selection(self):
+        from spriter.commands.transform import InvertColorsCommand
+
+        pixels = np.zeros((2, 2, 4), dtype=np.uint8)
+        pixels[:, :] = (10, 20, 30, 255)
+        s = _sprite_with_pixels(pixels.copy())
+        mask = np.zeros((2, 2), dtype=bool)
+        mask[0, 0] = True
+        s.selection_mask = mask
+        InvertColorsCommand(s, 0, 0, respect_selection=True).execute()
+        result = _get_pixels(s)
+        assert tuple(result[0, 0]) == (245, 235, 225, 255)
+        assert tuple(result[0, 1]) == (10, 20, 30, 255)
+
+    def test_ignore_selection_when_flag_false(self):
+        from spriter.commands.transform import InvertColorsCommand
+
+        pixels = np.zeros((2, 2, 4), dtype=np.uint8)
+        pixels[:, :] = (10, 20, 30, 255)
+        s = _sprite_with_pixels(pixels.copy())
+        mask = np.zeros((2, 2), dtype=bool)
+        mask[0, 0] = True
+        s.selection_mask = mask
+        InvertColorsCommand(s, 0, 0, respect_selection=False).execute()
+        result = _get_pixels(s)
+        # All four pixels inverted regardless of selection.
+        for r in range(2):
+            for c in range(2):
+                assert tuple(result[r, c]) == (245, 235, 225, 255)
+
+    def test_undo_restores(self):
+        from spriter.commands.transform import InvertColorsCommand
+
+        pixels = np.zeros((2, 2, 4), dtype=np.uint8)
+        pixels[0, 0] = (10, 20, 30, 255)
+        s = _sprite_with_pixels(pixels.copy())
+        cmd = InvertColorsCommand(s, 0, 0)
+        cmd.execute()
+        cmd.undo()
+        result = _get_pixels(s)
+        assert tuple(result[0, 0]) == (10, 20, 30, 255)
+
+
+# ---------------------------------------------------------------------------
+# MainWindow: Replace Color & Invert Colors UI
+# ---------------------------------------------------------------------------
+
+
+class TestReplaceColorUI:
+    def test_replace_color_active_scope(self, qapp, monkeypatch):
+        from spriter.ui import main_window as mw
+
+        win = mw.MainWindow()
+        win.new_project(4, 4)
+        s = win._sprite
+        s.set_cel_pixels(0, 0, _solid((255, 0, 0, 255)))
+        # Set FG = red, BG = blue.
+        win._color_picker.foreground = (255, 0, 0, 255)
+        win._color_picker.background = (0, 0, 255, 255)
+
+        class _StubDlg:
+            def __init__(self, *a, **kw):
+                pass
+
+            def exec(self):
+                from PyQt6.QtWidgets import QDialog
+
+                return QDialog.DialogCode.Accepted
+
+            def color_pair(self):
+                return (255, 0, 0, 255), (0, 0, 255, 255)
+
+            def tolerance(self):
+                return 0.0
+
+            def scope(self):
+                return "active"
+
+        monkeypatch.setattr(mw, "_ReplaceColorDialog", _StubDlg)
+        win._prompt_replace_color()
+        result = s.get_cel(0, 0).pixels
+        assert tuple(result[0, 0]) == (0, 0, 255, 255)
+        win._unsaved = False
+        win.close()
+
+    def test_replace_color_fg_eq_bg_aborts(self, qapp, monkeypatch):
+        from spriter.ui import main_window as mw
+
+        win = mw.MainWindow()
+        win.new_project(4, 4)
+        win._color_picker.foreground = (255, 0, 0, 255)
+        win._color_picker.background = (255, 0, 0, 255)
+        called = {"info": 0}
+        monkeypatch.setattr(
+            mw.QMessageBox,
+            "information",
+            lambda *a, **kw: called.__setitem__("info", called["info"] + 1),
+        )
+        win._prompt_replace_color()
+        assert called["info"] == 1
+        assert not win._stack.can_undo
+        win._unsaved = False
+        win.close()
+
+    def test_replace_color_all_scope_composite(self, qapp, monkeypatch):
+        from spriter.ui import main_window as mw
+        from spriter.commands.base import CompositeCommand
+
+        win = mw.MainWindow()
+        win.new_project(4, 4)
+        win._sprite.add_frame()
+        win._sprite.add_layer("L2")
+        # Fill every cel with red.
+        for li in range(win._sprite.layer_count):
+            for fi in range(win._sprite.frame_count):
+                win._sprite.set_cel_pixels(li, fi, _solid((255, 0, 0, 255)))
+        win._color_picker.foreground = (255, 0, 0, 255)
+        win._color_picker.background = (0, 255, 0, 255)
+
+        class _StubDlg:
+            def __init__(self, *a, **kw):
+                pass
+
+            def exec(self):
+                from PyQt6.QtWidgets import QDialog
+
+                return QDialog.DialogCode.Accepted
+
+            def color_pair(self):
+                return (255, 0, 0, 255), (0, 255, 0, 255)
+
+            def tolerance(self):
+                return 0.0
+
+            def scope(self):
+                return "all"
+
+        monkeypatch.setattr(mw, "_ReplaceColorDialog", _StubDlg)
+        win._prompt_replace_color()
+        for li in range(win._sprite.layer_count):
+            for fi in range(win._sprite.frame_count):
+                px = win._sprite.get_cel(li, fi).pixels
+                assert tuple(px[0, 0]) == (0, 255, 0, 255)
+        win._unsaved = False
+        win.close()
+
+
+class TestInvertColorsUI:
+    def test_invert_single_frame_single_layer(self, qapp):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.new_project(4, 4)
+        win._sprite.set_cel_pixels(0, 0, _solid((10, 20, 30, 255)))
+        win._invert_colors()
+        px = win._sprite.get_cel(0, 0).pixels
+        assert tuple(px[0, 0]) == (245, 235, 225, 255)
+        win._unsaved = False
+        win.close()
+
+    def test_invert_multi_frame_yes_all(self, qapp, monkeypatch):
+        from spriter.ui import main_window as mw
+
+        win = mw.MainWindow()
+        win.new_project(4, 4)
+        win._sprite.add_frame()
+        for fi in range(win._sprite.frame_count):
+            win._sprite.set_cel_pixels(0, fi, _solid((10, 20, 30, 255)))
+        monkeypatch.setattr(
+            mw.QMessageBox,
+            "question",
+            lambda *a, **kw: mw.QMessageBox.StandardButton.Yes,
+        )
+        win._invert_colors()
+        for fi in range(win._sprite.frame_count):
+            px = win._sprite.get_cel(0, fi).pixels
+            assert tuple(px[0, 0]) == (245, 235, 225, 255)
+        win._unsaved = False
+        win.close()
+
+    def test_invert_selection_no_selection(self, qapp, monkeypatch):
+        from spriter.ui import main_window as mw
+
+        win = mw.MainWindow()
+        win.new_project(4, 4)
+        called = {"info": 0}
+        monkeypatch.setattr(
+            mw.QMessageBox,
+            "information",
+            lambda *a, **kw: called.__setitem__("info", called["info"] + 1),
+        )
+        win._invert_colors_selection()
+        assert called["info"] == 1
+        assert not win._stack.can_undo
+        win._unsaved = False
+        win.close()
+
+    def test_invert_selection_only_masked(self, qapp):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win.new_project(4, 4)
+        win._sprite.set_cel_pixels(0, 0, _solid((10, 20, 30, 255)))
+        mask = np.zeros((4, 4), dtype=bool)
+        mask[0, 0] = True
+        win._sprite.selection_mask = mask
+        win._invert_colors_selection()
+        px = win._sprite.get_cel(0, 0).pixels
+        assert tuple(px[0, 0]) == (245, 235, 225, 255)
+        assert tuple(px[0, 1]) == (10, 20, 30, 255)
+        win._unsaved = False
+        win.close()

@@ -24,18 +24,26 @@ from typing import List, Optional
 from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QKeySequence
 from PyQt6.QtWidgets import (
+    QButtonGroup,
+    QDialog,
+    QDialogButtonBox,
     QDockWidget,
+    QDoubleSpinBox,
     QFileDialog,
+    QFrame,
+    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
+    QRadioButton,
     QStatusBar,
+    QVBoxLayout,
     QWidget,
 )
 
-from ..commands.base import CommandStack
+from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
     DuplicateFrameCommand,
@@ -51,7 +59,7 @@ from ..commands.layer_ops import (
 from ..core.palette import Palette
 from ..core.settings import Settings
 from ..core.sprite import Sprite
-from ..io.gif_io import export_gif
+from ..io.gif_io import export_gif, import_gif
 from ..io.png_io import export_all_frames, export_frame, import_png
 from ..io.project_io import load as load_project
 from ..io.project_io import save as save_project
@@ -69,11 +77,14 @@ from ..tools.text import TextTool
 from ..commands.transform import (
     AdjustmentCommand,
     CanvasResizeCommand,
+    CropToSelectionCommand,
     FlipCommand,
+    InvertColorsCommand,
     OutlineCommand,
     ReplaceColorCommand,
     RotateCommand,
     ScaleCommand,
+    ScaleSelectionCommand,
     ShiftCommand,
 )
 from ..core.animation import LoopMode
@@ -340,6 +351,7 @@ class MainWindow(QMainWindow):
         # Import sub-menu
         import_menu = QMenu("&Import", self)
         self._add_action(import_menu, "Import &PNG as Sprite…", self._import_png)
+        self._add_action(import_menu, "Import &GIF as Sprite…", self._import_gif)
         self._add_action(import_menu, "Import Sprite &Sheet…", self._import_sheet)
         import_menu.addSeparator()
         self._add_action(import_menu, "Import &Palette…", self._import_palette)
@@ -443,11 +455,17 @@ class MainWindow(QMainWindow):
         self._add_action(xform_menu, "Rotate &180°", lambda: self._rotate(180))
         xform_menu.addSeparator()
         self._add_action(xform_menu, "&Canvas Size…", self._prompt_canvas_resize)
+        self._add_action(xform_menu, "Crop to S&election", self._crop_to_selection)
         self._add_action(xform_menu, "&Scale Image…", self._prompt_scale)
+        self._add_action(xform_menu, "Scale Se&lection…", self._prompt_scale_selection)
         xform_menu.addSeparator()
         self._add_action(xform_menu, "Shift / &Offset…", self._prompt_shift)
         self._add_action(xform_menu, "&Outline", self._apply_outline)
         self._add_action(xform_menu, "Replace &Color…", self._prompt_replace_color)
+        self._add_action(xform_menu, "&Invert Colors", self._invert_colors)
+        self._add_action(
+            xform_menu, "Invert Colors in &Selection", self._invert_colors_selection
+        )
         xform_menu.addSeparator()
         self._add_action(
             xform_menu, "&Brightness / Contrast…", self._prompt_adjust_brightness
@@ -634,6 +652,8 @@ class MainWindow(QMainWindow):
                 self._layers_panel.refresh()
                 if self._canvas:
                     self._canvas.active_layer = self._layers_panel.active_layer
+            if self._timeline:
+                self._timeline.refresh()
         self._refresh_undo_redo_labels()
 
     def _redo(self) -> None:
@@ -648,6 +668,8 @@ class MainWindow(QMainWindow):
                 self._layers_panel.refresh()
                 if self._canvas:
                     self._canvas.active_layer = self._layers_panel.active_layer
+            if self._timeline:
+                self._timeline.refresh()
         self._refresh_undo_redo_labels()
 
     def _zoom_in(self) -> None:
@@ -836,6 +858,8 @@ class MainWindow(QMainWindow):
         self._stack.push(cmd)
         if self._canvas:
             self._canvas.invalidate_cache()
+        if self._timeline:
+            self._timeline.refresh()
         self._unsaved = True
         self._refresh_undo_redo_labels()
 
@@ -887,6 +911,61 @@ class MainWindow(QMainWindow):
             self._push_transform(ScaleCommand(self._sprite, w, h))
             self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
 
+    def _crop_to_selection(self) -> None:
+        if self._sprite is None:
+            return
+        mask = self._sprite.selection_mask
+        if mask is None or not bool(mask.any()):
+            QMessageBox.information(
+                self,
+                "Crop to Selection",
+                "No active selection. Make a selection first.",
+            )
+            return
+        try:
+            cmd = CropToSelectionCommand(self._sprite)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Crop to Selection", str(exc))
+            return
+        self._push_transform(cmd)
+        self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
+
+    def _prompt_scale_selection(self) -> None:
+        if self._sprite is None:
+            return
+        mask = self._sprite.selection_mask
+        if mask is None or not bool(mask.any()):
+            QMessageBox.information(
+                self,
+                "Scale Selection",
+                "No active selection. Make a selection first.",
+            )
+            return
+        # Use selection bounding box as the current size baseline.
+        import numpy as _np
+
+        sel_rows = _np.any(mask, axis=1)
+        sel_cols = _np.any(mask, axis=0)
+        cur_h = int(_np.where(sel_rows)[0][-1] - _np.where(sel_rows)[0][0] + 1)
+        cur_w = int(_np.where(sel_cols)[0][-1] - _np.where(sel_cols)[0][0] + 1)
+        w, ok1 = QInputDialog.getInt(
+            self, "Scale Selection", "New width (px):", cur_w, 1, 4096
+        )
+        if not ok1:
+            return
+        h, ok2 = QInputDialog.getInt(
+            self, "Scale Selection", "New height (px):", cur_h, 1, 4096
+        )
+        if not ok2:
+            return
+        li, fi = self._active_layer_frame()
+        try:
+            cmd = ScaleSelectionCommand(self._sprite, li, fi, w, h)
+        except ValueError as exc:
+            QMessageBox.warning(self, "Scale Selection", str(exc))
+            return
+        self._push_transform(cmd)
+
     def _prompt_shift(self) -> None:
         if self._sprite is None:
             return
@@ -919,13 +998,117 @@ class MainWindow(QMainWindow):
         self._push_transform(OutlineCommand(self._sprite, li, fi))
 
     def _prompt_replace_color(self) -> None:
+        if self._sprite is None or self._color_picker is None:
+            return
+        fg = tuple(int(c) for c in self._color_picker.foreground)
+        bg = tuple(int(c) for c in self._color_picker.background)
+        if fg == bg:
+            QMessageBox.information(
+                self,
+                "Replace Color",
+                "Foreground and background colors are identical \u2014 nothing to replace.",
+            )
+            return
+        dlg = _ReplaceColorDialog(fg, bg, self._sprite, self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        old_color, new_color = dlg.color_pair()
+        tolerance = dlg.tolerance()
+        targets = self._scope_targets(dlg.scope())
+        li_active, fi_active = self._active_layer_frame()
+        cmds = [
+            ReplaceColorCommand(
+                self._sprite, li, fi, old_color, new_color, tolerance=tolerance
+            )
+            for (li, fi) in targets
+        ]
+        if not cmds:
+            return
+        if len(cmds) == 1:
+            self._push_transform(cmds[0])
+        else:
+            self._push_transform(CompositeCommand(cmds, description="Replace Color"))
+
+    def _invert_colors(self) -> None:
         if self._sprite is None:
             return
-        QMessageBox.information(
-            self,
-            "Replace Color",
-            "Replace Color is accessible programmatically via ReplaceColorCommand.",
+        # Decide frame scope.
+        all_frames = False
+        if self._sprite.frame_count > 1:
+            choice = QMessageBox.question(
+                self,
+                "Invert Colors",
+                "This sprite has multiple frames. Invert colors on all frames?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            all_frames = choice == QMessageBox.StandardButton.Yes
+        # Decide layer scope.
+        all_layers = False
+        if self._sprite.layer_count > 1:
+            choice = QMessageBox.question(
+                self,
+                "Invert Colors",
+                "This sprite has multiple layers. Invert colors on all layers?",
+                QMessageBox.StandardButton.Yes
+                | QMessageBox.StandardButton.No
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes,
+            )
+            if choice == QMessageBox.StandardButton.Cancel:
+                return
+            all_layers = choice == QMessageBox.StandardButton.Yes
+        li_active, fi_active = self._active_layer_frame()
+        frames = range(self._sprite.frame_count) if all_frames else [fi_active]
+        layers = range(self._sprite.layer_count) if all_layers else [li_active]
+        cmds = [
+            InvertColorsCommand(self._sprite, li, fi, respect_selection=False)
+            for fi in frames
+            for li in layers
+        ]
+        if not cmds:
+            return
+        if len(cmds) == 1:
+            self._push_transform(cmds[0])
+        else:
+            self._push_transform(CompositeCommand(cmds, description="Invert Colors"))
+
+    def _invert_colors_selection(self) -> None:
+        if self._sprite is None:
+            return
+        mask = self._sprite.selection_mask
+        if mask is None or not bool(mask.any()):
+            QMessageBox.information(
+                self,
+                "Invert Colors in Selection",
+                "No active selection. Make a selection first.",
+            )
+            return
+        li, fi = self._active_layer_frame()
+        self._push_transform(
+            InvertColorsCommand(self._sprite, li, fi, respect_selection=True)
         )
+
+    def _scope_targets(self, scope: str) -> list:
+        """Return a list of (layer_index, frame_index) for the given scope."""
+        if self._sprite is None:
+            return []
+        li, fi = self._active_layer_frame()
+        if scope == "active":
+            return [(li, fi)]
+        if scope == "frame":
+            return [(l, fi) for l in range(self._sprite.layer_count)]
+        if scope == "all":
+            return [
+                (l, f)
+                for f in range(self._sprite.frame_count)
+                for l in range(self._sprite.layer_count)
+            ]
+        return [(li, fi)]
 
     def _prompt_adjust_brightness(self) -> None:
         if self._sprite is None:
@@ -1063,6 +1246,26 @@ class MainWindow(QMainWindow):
             return
         try:
             sprite = import_png(path)
+        except Exception as exc:
+            QMessageBox.critical(self, "Import Error", str(exc))
+            return
+        self._sprite = sprite
+        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+        self._current_path = None
+        self._unsaved = True
+        self._rebuild_ui()
+        w, h = sprite.width, sprite.height
+        self._status_canvas.setText(f"{w}\u00d7{h}")
+        self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
+
+    def _import_gif(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Import GIF as Sprite", "", "Animated GIF (*.gif)"
+        )
+        if not path:
+            return
+        try:
+            sprite = import_gif(path)
         except Exception as exc:
             QMessageBox.critical(self, "Import Error", str(exc))
             return
@@ -1265,12 +1468,16 @@ class MainWindow(QMainWindow):
             return
         url: QUrl = urls[0]
         path = url.toLocalFile()
-        if path.lower().endswith(".spriter"):
+        lowered = path.lower()
+        if lowered.endswith(".spriter"):
             self.open_project(path)
         else:
-            # Try importing as a PNG/image.
+            # Try importing as a GIF or PNG/image.
             try:
-                sprite = import_png(path)
+                if lowered.endswith(".gif"):
+                    sprite = import_gif(path)
+                else:
+                    sprite = import_png(path)
             except Exception as exc:
                 QMessageBox.critical(self, "Drop Error", str(exc))
                 return
@@ -1399,3 +1606,121 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         event.accept()
+
+
+# ---------------------------------------------------------------------------
+# Replace Color dialog
+# ---------------------------------------------------------------------------
+
+
+class _ReplaceColorDialog(QDialog):
+    """Dialog for the Transform > Replace Color action.
+
+    Shows the current foreground and background swatches, lets the user pick
+    direction (FG\u2192BG or BG\u2192FG), the cel scope, and a tolerance.
+    """
+
+    def __init__(
+        self,
+        fg: tuple,
+        bg: tuple,
+        sprite: Sprite,
+        parent: Optional[QWidget] = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle("Replace Color")
+        self._fg = tuple(int(c) for c in fg)
+        self._bg = tuple(int(c) for c in bg)
+
+        layout = QVBoxLayout(self)
+
+        # Color swatches with labels.
+        swatch_row = QHBoxLayout()
+        swatch_row.addWidget(QLabel("Foreground:"))
+        swatch_row.addWidget(self._make_swatch(self._fg))
+        swatch_row.addWidget(QLabel(self._hex_label(self._fg)))
+        swatch_row.addSpacing(20)
+        swatch_row.addWidget(QLabel("Background:"))
+        swatch_row.addWidget(self._make_swatch(self._bg))
+        swatch_row.addWidget(QLabel(self._hex_label(self._bg)))
+        swatch_row.addStretch(1)
+        layout.addLayout(swatch_row)
+
+        # Direction.
+        layout.addWidget(QLabel("Direction:"))
+        self._dir_fg_to_bg = QRadioButton("Replace Foreground with Background")
+        self._dir_bg_to_fg = QRadioButton("Replace Background with Foreground")
+        self._dir_fg_to_bg.setChecked(True)
+        self._dir_group = QButtonGroup(self)
+        self._dir_group.addButton(self._dir_fg_to_bg)
+        self._dir_group.addButton(self._dir_bg_to_fg)
+        layout.addWidget(self._dir_fg_to_bg)
+        layout.addWidget(self._dir_bg_to_fg)
+
+        # Scope.
+        layout.addWidget(QLabel("Apply to:"))
+        self._scope_active = QRadioButton("Active layer + frame")
+        self._scope_frame = QRadioButton("All layers in current frame")
+        self._scope_all = QRadioButton("All layers in all frames")
+        self._scope_active.setChecked(True)
+        self._scope_group = QButtonGroup(self)
+        self._scope_group.addButton(self._scope_active)
+        self._scope_group.addButton(self._scope_frame)
+        self._scope_group.addButton(self._scope_all)
+        layout.addWidget(self._scope_active)
+        if sprite.layer_count > 1:
+            layout.addWidget(self._scope_frame)
+        if sprite.frame_count > 1:
+            layout.addWidget(self._scope_all)
+
+        # Tolerance.
+        tol_row = QHBoxLayout()
+        tol_row.addWidget(QLabel("Tolerance:"))
+        self._tol_spin = QDoubleSpinBox()
+        self._tol_spin.setRange(0.0, 510.0)
+        self._tol_spin.setDecimals(1)
+        self._tol_spin.setSingleStep(1.0)
+        self._tol_spin.setValue(0.0)
+        tol_row.addWidget(self._tol_spin)
+        tol_row.addStretch(1)
+        layout.addLayout(tol_row)
+
+        # Buttons.
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+    @staticmethod
+    def _make_swatch(color: tuple) -> QFrame:
+        sw = QFrame()
+        sw.setFixedSize(28, 20)
+        sw.setFrameShape(QFrame.Shape.Box)
+        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
+        sw.setStyleSheet(
+            f"background-color: rgba({r}, {g}, {b}, {a}); border: 1px solid #444;"
+        )
+        return sw
+
+    @staticmethod
+    def _hex_label(color: tuple) -> str:
+        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
+        return f"#{r:02X}{g:02X}{b:02X} (a={a})"
+
+    def color_pair(self) -> tuple:
+        """Return ``(old_color, new_color)`` based on the chosen direction."""
+        if self._dir_fg_to_bg.isChecked():
+            return self._fg, self._bg
+        return self._bg, self._fg
+
+    def tolerance(self) -> float:
+        return float(self._tol_spin.value())
+
+    def scope(self) -> str:
+        if self._scope_all.isChecked():
+            return "all"
+        if self._scope_frame.isChecked():
+            return "frame"
+        return "active"

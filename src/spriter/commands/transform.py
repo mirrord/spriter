@@ -14,9 +14,12 @@ Commands
 * :class:`ShiftCommand`         — wrap-around pixel shift
 * :class:`OutlineCommand`       — 1-pixel outline around non-transparent pixels
 * :class:`ReplaceColorCommand`  — swap one colour for another
+* :class:`InvertColorsCommand`  — invert RGB (optionally within selection)
 * :class:`AdjustmentCommand`    — brightness / contrast / hue / saturation
 * :class:`CanvasResizeCommand`  — resize the canvas (crop / extend every cel)
+* :class:`CropToSelectionCommand` — crop every cel to the selection's bbox
 * :class:`ScaleCommand`         — resample all cels to a new size
+* :class:`ScaleSelectionCommand` — resample the selected region of one cel
 """
 
 from __future__ import annotations
@@ -354,6 +357,64 @@ class ReplaceColorCommand(Command):
 
 
 # ---------------------------------------------------------------------------
+# InvertColorsCommand
+# ---------------------------------------------------------------------------
+
+
+class InvertColorsCommand(Command):
+    """Invert the RGB channels of one cel.
+
+    The alpha channel is preserved, and fully-transparent pixels (alpha == 0)
+    are left untouched so transparent regions remain transparent.
+
+    If ``respect_selection`` is True and ``sprite.selection_mask`` is set, only
+    pixels inside the selection are inverted.
+
+    Args:
+        sprite: The owning sprite.
+        layer_index: Layer to operate on.
+        frame_index: Frame to operate on.
+        respect_selection: If True, restrict the inversion to the current
+            selection mask (when one is present).
+    """
+
+    def __init__(
+        self,
+        sprite: Sprite,
+        layer_index: int,
+        frame_index: int,
+        *,
+        respect_selection: bool = True,
+    ) -> None:
+        self._sprite = sprite
+        self._li = layer_index
+        self._fi = frame_index
+        self._respect_selection = respect_selection
+        self._old_pixels: Optional[np.ndarray] = None
+
+    @property
+    def description(self) -> str:
+        return "Invert Colors"
+
+    def execute(self) -> None:
+        pixels = _get_pixels(self._sprite, self._li, self._fi)
+        self._old_pixels = pixels.copy()
+        # Only touch pixels that are not fully transparent.
+        affect = pixels[..., 3] > 0
+        if self._respect_selection:
+            mask = self._sprite.selection_mask
+            if mask is not None:
+                affect = affect & mask
+        result = pixels.copy()
+        result[affect, :3] = 255 - result[affect, :3]
+        _set_pixels(self._sprite, self._li, self._fi, result)
+
+    def undo(self) -> None:
+        assert self._old_pixels is not None
+        _set_pixels(self._sprite, self._li, self._fi, self._old_pixels)
+
+
+# ---------------------------------------------------------------------------
 # AdjustmentCommand
 # ---------------------------------------------------------------------------
 
@@ -508,6 +569,73 @@ class CanvasResizeCommand(Command):
 
 
 # ---------------------------------------------------------------------------
+# CropToSelectionCommand
+# ---------------------------------------------------------------------------
+
+
+class CropToSelectionCommand(Command):
+    """Crop every cel to the bounding box of the active selection.
+
+    Uses the bounding rectangle of ``sprite.selection_mask`` as the new canvas
+    extent.  All layers and frames are cropped consistently so animation and
+    layer registration are preserved.  The selection mask is cleared after the
+    crop (its pixel coordinates no longer map onto the new canvas) and
+    restored on undo.
+
+    Args:
+        sprite: The owning sprite.  Must have a non-empty
+            :attr:`Sprite.selection_mask`.
+
+    Raises:
+        ValueError: If no selection is active or the mask is entirely empty.
+    """
+
+    def __init__(self, sprite: Sprite) -> None:
+        mask = sprite.selection_mask
+        if mask is None or not bool(mask.any()):
+            raise ValueError(
+                "CropToSelectionCommand requires an active, non-empty selection"
+            )
+        rows = np.any(mask, axis=1)
+        cols = np.any(mask, axis=0)
+        y_idx = np.where(rows)[0]
+        x_idx = np.where(cols)[0]
+        self._x0 = int(x_idx[0])
+        self._y0 = int(y_idx[0])
+        self._w = int(x_idx[-1] - x_idx[0] + 1)
+        self._h = int(y_idx[-1] - y_idx[0] + 1)
+        self._sprite = sprite
+        self._old_width: Optional[int] = None
+        self._old_height: Optional[int] = None
+        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._saved_mask: Optional[np.ndarray] = None
+
+    @property
+    def description(self) -> str:
+        return f"Crop to Selection ({self._w}×{self._h})"
+
+    def execute(self) -> None:
+        self._old_width = self._sprite.width
+        self._old_height = self._sprite.height
+        self._saved_cels = _save_all_cels(self._sprite)
+        mask = self._sprite.selection_mask
+        self._saved_mask = None if mask is None else mask.copy()
+        self._sprite.resize_canvas(self._w, self._h, -self._x0, -self._y0)
+        # The bbox occupies the entire new canvas; selection coords are
+        # no longer meaningful, so clear it.
+        self._sprite.selection_mask = None
+
+    def undo(self) -> None:
+        assert self._saved_cels is not None
+        assert self._old_width is not None and self._old_height is not None
+        self._sprite.resize_canvas(self._old_width, self._old_height)
+        _restore_all_cels(self._sprite, self._saved_cels)
+        self._sprite.selection_mask = (
+            None if self._saved_mask is None else self._saved_mask.copy()
+        )
+
+
+# ---------------------------------------------------------------------------
 # ScaleCommand
 # ---------------------------------------------------------------------------
 
@@ -555,3 +683,138 @@ class ScaleCommand(Command):
         # Restore original size then restore pixels.
         self._sprite.scale_pixels(self._old_width, self._old_height)
         _restore_all_cels(self._sprite, self._saved_cels)
+
+
+# ---------------------------------------------------------------------------
+# ScaleSelectionCommand
+# ---------------------------------------------------------------------------
+
+
+class ScaleSelectionCommand(Command):
+    """Resample the selected region of one cel to a new size.
+
+    The bounding box of ``sprite.selection_mask`` is treated as the source.
+    Selected pixels are extracted, resampled to ``(new_width, new_height)``,
+    and pasted back at the top-left of the original bounding box (clipped to
+    the canvas).  The original masked pixels are cleared (made transparent)
+    before the scaled pixels are written, and the selection mask is updated
+    to cover the new region.
+
+    Args:
+        sprite: The owning sprite.
+        layer_index: Layer to operate on.
+        frame_index: Frame to operate on.
+        new_width: Target width of the scaled region in pixels.
+        new_height: Target height of the scaled region in pixels.
+        method: Resampling method — ``"nearest"`` (default) or ``"bilinear"``.
+
+    Raises:
+        ValueError: If there is no active selection, the mask is empty,
+            or *new_width* / *new_height* is not positive.
+    """
+
+    def __init__(
+        self,
+        sprite: Sprite,
+        layer_index: int,
+        frame_index: int,
+        new_width: int,
+        new_height: int,
+        method: str = "nearest",
+    ) -> None:
+        if new_width <= 0 or new_height <= 0:
+            raise ValueError(
+                f"Scale size must be positive, got {new_width}x{new_height}"
+            )
+        if sprite.selection_mask is None or not bool(sprite.selection_mask.any()):
+            raise ValueError("ScaleSelectionCommand requires an active selection")
+        self._sprite = sprite
+        self._li = layer_index
+        self._fi = frame_index
+        self._new_w = int(new_width)
+        self._new_h = int(new_height)
+        self._method = method
+        self._old_pixels: Optional[np.ndarray] = None
+        self._old_mask: Optional[np.ndarray] = None
+
+    @property
+    def description(self) -> str:
+        return f"Scale Selection to {self._new_w}×{self._new_h}"
+
+    def execute(self) -> None:
+        from PIL import Image as _PILImage
+
+        mask = self._sprite.selection_mask
+        assert mask is not None  # guarded in __init__
+        pixels = _get_pixels(self._sprite, self._li, self._fi)
+        self._old_pixels = pixels.copy()
+        self._old_mask = mask.copy()
+
+        # Bounding box of the selection.
+        sel_rows = np.any(mask, axis=1)
+        sel_cols = np.any(mask, axis=0)
+        r1 = int(np.where(sel_rows)[0][0])
+        r2 = int(np.where(sel_rows)[0][-1])
+        c1 = int(np.where(sel_cols)[0][0])
+        c2 = int(np.where(sel_cols)[0][-1])
+
+        sub_pixels = pixels[r1 : r2 + 1, c1 : c2 + 1].copy()
+        sub_mask = mask[r1 : r2 + 1, c1 : c2 + 1]
+        # Zero-out unselected pixels inside the bounding box so they don't
+        # contaminate the resampled output.
+        sub_pixels[~sub_mask] = 0
+
+        resample = (
+            _PILImage.Resampling.BILINEAR
+            if self._method == "bilinear"
+            else _PILImage.Resampling.NEAREST
+        )
+        scaled_pixels = np.array(
+            _PILImage.fromarray(sub_pixels, mode="RGBA").resize(
+                (self._new_w, self._new_h), resample=resample
+            ),
+            dtype=np.uint8,
+        )
+        # Resize the mask using nearest neighbour to preserve binary edges.
+        mask_img = _PILImage.fromarray(sub_mask.astype(np.uint8) * 255, mode="L")
+        scaled_mask = (
+            np.array(
+                mask_img.resize(
+                    (self._new_w, self._new_h),
+                    resample=_PILImage.Resampling.NEAREST,
+                ),
+                dtype=np.uint8,
+            )
+            > 0
+        )
+
+        h, w = self._sprite.height, self._sprite.width
+        result = pixels.copy()
+        # Clear original masked pixels.
+        result[mask] = 0
+
+        # Compute destination region clipped to the canvas.
+        dst_y0 = r1
+        dst_x0 = c1
+        dst_y1 = min(h, dst_y0 + self._new_h)
+        dst_x1 = min(w, dst_x0 + self._new_w)
+        src_h = dst_y1 - dst_y0
+        src_w = dst_x1 - dst_x0
+
+        new_mask = np.zeros((h, w), dtype=bool)
+        if src_h > 0 and src_w > 0:
+            src_slice = scaled_pixels[:src_h, :src_w]
+            mask_slice = scaled_mask[:src_h, :src_w]
+            dst = result[dst_y0:dst_y1, dst_x0:dst_x1]
+            dst[mask_slice] = src_slice[mask_slice]
+            result[dst_y0:dst_y1, dst_x0:dst_x1] = dst
+            new_mask[dst_y0:dst_y1, dst_x0:dst_x1] = mask_slice
+
+        _set_pixels(self._sprite, self._li, self._fi, result)
+        self._sprite.selection_mask = new_mask if new_mask.any() else None
+
+    def undo(self) -> None:
+        assert self._old_pixels is not None
+        assert self._old_mask is not None
+        _set_pixels(self._sprite, self._li, self._fi, self._old_pixels)
+        self._sprite.selection_mask = self._old_mask.copy()

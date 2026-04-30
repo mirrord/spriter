@@ -15,7 +15,6 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -179,6 +178,90 @@ class TestGifIO:
         empty = Sprite(8, 8)
         with pytest.raises(ValueError, match="no frames"):
             export_gif(empty, tmp_path / "bad.gif")
+
+
+# ---------------------------------------------------------------------------
+# GIF import
+# ---------------------------------------------------------------------------
+
+
+def _write_gif(path, frames_rgba, durations):
+    """Write a list of ``(w, h, color_tuple)`` frames as an animated GIF."""
+    from PIL import Image
+
+    pil_frames = [Image.new("RGBA", (w, h), color) for (w, h, color) in frames_rgba]
+    pil_frames[0].save(
+        str(path),
+        format="GIF",
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=durations,
+        loop=0,
+        disposal=2,
+    )
+
+
+class TestGifImport:
+    def test_import_gif_creates_correct_sprite(self, tmp_path):
+        from spriter.io.gif_io import import_gif
+
+        gif = tmp_path / "anim.gif"
+        _write_gif(
+            gif,
+            [(6, 4, (255, 0, 0, 255)), (6, 4, (0, 255, 0, 255))],
+            [100, 100],
+        )
+        sprite = import_gif(gif)
+        assert sprite.width == 6
+        assert sprite.height == 4
+        assert sprite.layer_count == 1
+        assert sprite.frame_count == 2
+
+    def test_import_gif_pixel_values(self, tmp_path):
+        from spriter.io.gif_io import import_gif
+
+        gif = tmp_path / "colors.gif"
+        c0 = (200, 50, 25, 255)
+        c1 = (10, 220, 40, 255)
+        _write_gif(gif, [(8, 8, c0), (8, 8, c1)], [100, 100])
+        sprite = import_gif(gif)
+
+        px0 = sprite.get_cel(0, 0).pixels
+        px1 = sprite.get_cel(0, 1).pixels
+        assert px0 is not None and px1 is not None
+        # GIF palette quantization may shift channels slightly; allow a small
+        # tolerance and just check the dominant channel matches.
+        assert px0[0, 0, 0] > 150  # red dominant
+        assert px1[0, 0, 1] > 150  # green dominant
+        # Alpha preserved (opaque source).
+        assert px0[0, 0, 3] == 255
+        assert px1[0, 0, 3] == 255
+
+    def test_import_gif_preserves_durations(self, tmp_path):
+        from spriter.io.gif_io import import_gif
+
+        gif = tmp_path / "durations.gif"
+        _write_gif(
+            gif,
+            [(4, 4, (255, 0, 0, 255)), (4, 4, (0, 255, 0, 255))],
+            [80, 250],
+        )
+        sprite = import_gif(gif)
+        # Pillow may round to nearest 10 ms; allow ±20 ms tolerance.
+        assert abs(sprite.frames[0].duration_ms - 80) <= 20
+        assert abs(sprite.frames[1].duration_ms - 250) <= 20
+
+    def test_import_gif_single_frame(self, tmp_path):
+        from PIL import Image
+        from spriter.io.gif_io import import_gif
+
+        gif = tmp_path / "single.gif"
+        Image.new("RGBA", (5, 7), (10, 20, 30, 255)).save(str(gif), format="GIF")
+        sprite = import_gif(gif)
+        assert sprite.frame_count == 1
+        assert sprite.layer_count == 1
+        assert sprite.width == 5
+        assert sprite.height == 7
 
 
 # ---------------------------------------------------------------------------

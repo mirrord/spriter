@@ -14,7 +14,7 @@ from typing import Optional, Tuple
 
 import numpy as np
 from PyQt6.QtCore import QLine, QPointF, Qt, QTimer, pyqtSignal
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QWheelEvent
+from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import QWidget
 
 from ..commands.base import CommandStack
@@ -92,6 +92,13 @@ class CanvasWidget(QWidget):
         self._sel_timer.timeout.connect(self._tick_selection_anim)
         self._sel_timer.start()
 
+        # Coalesce drag repaints — many mouseMove events per frame collapse
+        # into a single paint, capped to ~60 fps.
+        self._repaint_timer = QTimer(self)
+        self._repaint_timer.setInterval(16)
+        self._repaint_timer.setSingleShot(True)
+        self._repaint_timer.timeout.connect(self.update)
+
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.setMinimumSize(64, 64)
@@ -150,6 +157,11 @@ class CanvasWidget(QWidget):
         """Discard the composite image cache and schedule a repaint."""
         self._composite_cache = None
         self.update()
+
+    def _request_paint(self) -> None:
+        """Schedule a repaint on the next vsync-ish tick (coalesces drag events)."""
+        if not self._repaint_timer.isActive():
+            self._repaint_timer.start()
 
     def fit_to_window(self) -> None:
         """Set zoom and pan so the canvas fills the widget as closely as possible."""
@@ -221,13 +233,16 @@ class CanvasWidget(QWidget):
         # Convert numpy RGBA → QImage.
         arr = np.ascontiguousarray(composite)
         image = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888)
-        scaled = image.scaled(
-            scaled_w,
-            scaled_h,
-            Qt.AspectRatioMode.IgnoreAspectRatio,
-            Qt.TransformationMode.FastTransformation,
-        )
-        painter.drawImage(offset, scaled)
+        if self._zoom == 1.0 and scaled_w == w and scaled_h == h:
+            painter.drawImage(offset, image)
+        else:
+            scaled = image.scaled(
+                scaled_w,
+                scaled_h,
+                Qt.AspectRatioMode.IgnoreAspectRatio,
+                Qt.TransformationMode.FastTransformation,
+            )
+            painter.drawImage(offset, scaled)
 
         # Pixel grid — only visible at higher zoom levels.
         if self.show_grid and self._zoom >= 4.0:
@@ -247,14 +262,17 @@ class CanvasWidget(QWidget):
                 ov_image = QImage(
                     ov_arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888
                 )
-                scaled_ov = ov_image.scaled(
-                    scaled_w,
-                    scaled_h,
-                    Qt.AspectRatioMode.IgnoreAspectRatio,
-                    Qt.TransformationMode.FastTransformation,
-                )
                 painter.setOpacity(0.75)
-                painter.drawImage(offset, scaled_ov)
+                if self._zoom == 1.0 and scaled_w == w and scaled_h == h:
+                    painter.drawImage(offset, ov_image)
+                else:
+                    scaled_ov = ov_image.scaled(
+                        scaled_w,
+                        scaled_h,
+                        Qt.AspectRatioMode.IgnoreAspectRatio,
+                        Qt.TransformationMode.FastTransformation,
+                    )
+                    painter.drawImage(offset, scaled_ov)
                 painter.setOpacity(1.0)
 
         # Tiling preview — 3×3 repeated copies surrounding the main canvas.
@@ -271,24 +289,35 @@ class CanvasWidget(QWidget):
         self, painter: QPainter, offset: QPointF, w: int, h: int
     ) -> None:
         check = max(4, int(self._zoom * 2))
+        pixmap = self._get_checker_pixmap(check)
+        # Align the brush so its origin matches the canvas top-left.
+        ox, oy = int(offset.x()), int(offset.y())
+        brush = QBrush(pixmap)
+        from PyQt6.QtGui import QTransform
+
+        brush.setTransform(QTransform().translate(ox, oy))
+        painter.fillRect(ox, oy, w, h, brush)
+
+    def _get_checker_pixmap(self, cell: int) -> QPixmap:
+        """Return a 2-cell × 2-cell tiling checkerboard pixmap (cached by cell size)."""
+        cache = getattr(self, "_checker_cache", None)
+        if cache is None:
+            cache = self._checker_cache = {}
+        pm = cache.get(cell)
+        if pm is not None:
+            return pm
+        size = cell * 2
+        pm = QPixmap(size, size)
         light = QColor(200, 200, 200)
         dark = QColor(150, 150, 150)
-        ox, oy = int(offset.x()), int(offset.y())
-        row = 0
-        while row < h:
-            col = 0
-            while col < w:
-                parity = (row // check + col // check) % 2
-                color = light if parity == 0 else dark
-                painter.fillRect(
-                    ox + col,
-                    oy + row,
-                    min(check, w - col),
-                    min(check, h - row),
-                    color,
-                )
-                col += check
-            row += check
+        p = QPainter(pm)
+        p.fillRect(0, 0, cell, cell, light)
+        p.fillRect(cell, cell, cell, cell, light)
+        p.fillRect(cell, 0, cell, cell, dark)
+        p.fillRect(0, cell, cell, cell, dark)
+        p.end()
+        cache[cell] = pm
+        return pm
 
     def _paint_onion_skin(
         self, painter: QPainter, offset: QPointF, scaled_w: int, scaled_h: int
@@ -448,7 +477,10 @@ class CanvasWidget(QWidget):
             for mx, my in self._mirror_point(cx, cy)[1:]:
                 if 0 <= mx < self._sprite.width and 0 <= my < self._sprite.height:
                     self._tool.on_drag(mx, my)
-            self.invalidate_cache()
+            # No tool commits during on_drag — committed cel pixels are
+            # unchanged.  Just request a coalesced repaint so the live
+            # preview overlay refreshes.
+            self._request_paint()
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         if self._panning and event.button() in (

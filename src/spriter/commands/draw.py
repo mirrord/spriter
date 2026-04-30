@@ -19,6 +19,9 @@ class DrawCelCommand(Command):
     The command snapshots both the *before* and *after* pixel buffers so that
     :meth:`execute` can re-apply the change and :meth:`undo` can revert it.
 
+    Internally only the cropped bounding box of changed pixels is retained, so
+    a small edit on a large canvas costs proportionally little memory.
+
     Args:
         sprite: The owning sprite document.
         layer_index: Index of the layer being edited.
@@ -40,19 +43,59 @@ class DrawCelCommand(Command):
         self._sprite = sprite
         self._layer_index = layer_index
         self._frame_index = frame_index
-        self._before = before.copy()
-        self._after = after.copy()
         self._description = description
+
+        # Crop to the bbox of changed pixels to keep undo memory bounded.
+        if before.shape != after.shape:
+            # Shape mismatch (e.g. canvas resize) — fall back to full snapshots.
+            self._bbox: Optional[tuple] = None
+            self._before = before.copy()
+            self._after = after.copy()
+            return
+
+        diff = np.any(before != after, axis=-1)
+        if not diff.any():
+            # No change — store empty patch.
+            self._bbox = (0, 0, 0, 0)
+            self._before = np.empty((0, 0, 4), dtype=np.uint8)
+            self._after = np.empty((0, 0, 4), dtype=np.uint8)
+            return
+
+        rows = np.any(diff, axis=1)
+        cols = np.any(diff, axis=0)
+        y0 = int(np.argmax(rows))
+        y1 = int(len(rows) - np.argmax(rows[::-1]))
+        x0 = int(np.argmax(cols))
+        x1 = int(len(cols) - np.argmax(cols[::-1]))
+        self._bbox = (x0, y0, x1, y1)
+        self._before = before[y0:y1, x0:x1].copy()
+        self._after = after[y0:y1, x0:x1].copy()
 
     @property
     def description(self) -> str:
         return self._description
 
     def execute(self) -> None:
-        self._sprite.set_cel_pixels(self._layer_index, self._frame_index, self._after)
+        self._apply(self._after)
 
     def undo(self) -> None:
-        self._sprite.set_cel_pixels(self._layer_index, self._frame_index, self._before)
+        self._apply(self._before)
+
+    def _apply(self, patch: np.ndarray) -> None:
+        if self._bbox is None:
+            self._sprite.set_cel_pixels(self._layer_index, self._frame_index, patch)
+            return
+        # Read current cel, paste the patch into the bbox, write back.
+        cel = self._sprite.get_cel(self._layer_index, self._frame_index)
+        h, w = self._sprite.height, self._sprite.width
+        if cel.pixels is None:
+            current = np.zeros((h, w, 4), dtype=np.uint8)
+        else:
+            current = cel.pixels.copy()
+        x0, y0, x1, y1 = self._bbox
+        if x1 > x0 and y1 > y0:
+            current[y0:y1, x0:x1] = patch
+        self._sprite.set_cel_pixels(self._layer_index, self._frame_index, current)
 
 
 class SetSelectionCommand(Command):

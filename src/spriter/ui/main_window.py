@@ -1289,17 +1289,28 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+        # Best-effort dimension estimation to pre-populate the dialogs.
+        est_w, est_h, est_pad = 16, 16, 0
+        try:
+            from ..io.spritesheet import estimate_sheet_layout
+
+            est = estimate_sheet_layout(path)
+            est_w, est_h, est_pad = est.frame_width, est.frame_height, est.padding
+        except Exception:
+            pass
         fw, ok1 = QInputDialog.getInt(
-            self, "Import Sheet", "Frame width (px):", 16, 1, 4096
+            self, "Import Sheet", "Frame width (px):", est_w, 1, 4096
         )
         if not ok1:
             return
         fh, ok2 = QInputDialog.getInt(
-            self, "Import Sheet", "Frame height (px):", 16, 1, 4096
+            self, "Import Sheet", "Frame height (px):", est_h, 1, 4096
         )
         if not ok2:
             return
-        pad, ok3 = QInputDialog.getInt(self, "Import Sheet", "Padding (px):", 0, 0, 64)
+        pad, ok3 = QInputDialog.getInt(
+            self, "Import Sheet", "Padding (px):", est_pad, 0, 64
+        )
         if not ok3:
             return
         try:

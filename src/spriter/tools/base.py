@@ -75,6 +75,9 @@ class Tool(ABC):
         self.frame_index: int = 0
         self._before: Optional[np.ndarray] = None
         self._working: Optional[np.ndarray] = None
+        # Cached brush mask, invalidated when (size, shape) changes.
+        self._brush_mask_cache: Optional[np.ndarray] = None
+        self._brush_mask_key: Optional[Tuple[int, BrushShape]] = None
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -97,11 +100,14 @@ class Tool(ABC):
     # ------------------------------------------------------------------
 
     def preview_overlay(self) -> Optional[np.ndarray]:
-        """Return a copy of the in-progress pixel buffer for live preview.
+        """Return the in-progress pixel buffer for live preview.
 
-        Returns ``None`` when no stroke is active.
+        The returned array shares storage with the tool's working buffer; it
+        is intended for immediate read-only consumption by the renderer (which
+        copies the data into a QImage).  Returns ``None`` when no stroke is
+        active.
         """
-        return self._working.copy() if self._working is not None else None
+        return self._working
 
     def selection_preview_rect(self) -> Optional[Tuple[int, int, int, int]]:
         """Return the in-progress selection rectangle as (x0, y0, x1, y1), or ``None``.
@@ -191,13 +197,18 @@ class Tool(ABC):
             Boolean NumPy array of shape ``(brush_size, brush_size)``.
         """
         s = max(1, self.brush_size)
-        mask = np.ones((s, s), dtype=bool)
+        key = (s, self.brush_shape)
+        if self._brush_mask_key == key and self._brush_mask_cache is not None:
+            return self._brush_mask_cache
         if self.brush_shape == BrushShape.CIRCLE:
             centre = (s - 1) / 2.0
-            for ry in range(s):
-                for rx in range(s):
-                    if (rx - centre) ** 2 + (ry - centre) ** 2 > (s / 2) ** 2:
-                        mask[ry, rx] = False
+            ys, xs = np.ogrid[:s, :s]
+            mask = ((xs - centre) ** 2 + (ys - centre) ** 2) <= (s / 2.0) ** 2
+            mask = np.ascontiguousarray(mask)
+        else:
+            mask = np.ones((s, s), dtype=bool)
+        self._brush_mask_cache = mask
+        self._brush_mask_key = key
         return mask
 
     def _paint_at(
@@ -224,19 +235,54 @@ class Tool(ABC):
         bm = self._brush_mask()
         s = bm.shape[0]
         half = s // 2
+        h, w = pixels.shape[:2]
+
+        # Compute clipped destination rectangle.
+        dx0 = x - half
+        dy0 = y - half
+        dx1 = dx0 + s
+        dy1 = dy0 + s
+        cx0 = max(0, dx0)
+        cy0 = max(0, dy0)
+        cx1 = min(w, dx1)
+        cy1 = min(h, dy1)
+        if cx1 <= cx0 or cy1 <= cy0:
+            return
+
+        # Corresponding sub-mask of the brush.
+        mx0 = cx0 - dx0
+        my0 = cy0 - dy0
+        mx1 = mx0 + (cx1 - cx0)
+        my1 = my0 + (cy1 - cy0)
+        sub_mask = bm[my0:my1, mx0:mx1]
+
+        dst = pixels[cy0:cy1, cx0:cx1]
+
         if erase:
-            erase_color: Color = (0, 0, 0, 0)
-            for dy in range(s):
-                for dx in range(s):
-                    if bm[dy, dx]:
-                        _set_raw(pixels, x - half + dx, y - half + dy, erase_color)
-        else:
-            a = int(color[3] * self.opacity // 255)
-            paint: Color = (color[0], color[1], color[2], a)
-            for dy in range(s):
-                for dx in range(s):
-                    if bm[dy, dx]:
-                        _alpha_over(pixels, x - half + dx, y - half + dy, paint)
+            dst[sub_mask] = (0, 0, 0, 0)
+            return
+
+        a = int(color[3]) * int(self.opacity) // 255
+        if a <= 0:
+            return
+        if a >= 255:
+            dst[sub_mask] = (color[0], color[1], color[2], 255)
+            return
+
+        # Partial alpha: vectorised Porter-Duff "over".
+        sa = a / 255.0
+        sel = dst[sub_mask].astype(np.float32)  # (N, 4)
+        if sel.size == 0:
+            return
+        da = sel[:, 3] / 255.0
+        out_a = sa + da * (1.0 - sa)
+        # avoid divide-by-zero
+        safe = np.where(out_a > 0.0, out_a, 1.0)
+        inv_sa = 1.0 - sa
+        for c in range(3):
+            sel[:, c] = (color[c] * sa + sel[:, c] * da * inv_sa) / safe
+        sel[:, 3] = out_a * 255.0
+        dst[sub_mask] = sel.astype(np.uint8)
 
     def _paint_color(self) -> Color:
         """Return :attr:`foreground` (subclasses may override)."""

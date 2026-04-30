@@ -22,7 +22,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QKeySequence
+from PyQt6.QtGui import QAction, QKeySequence, QIcon, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -110,6 +110,11 @@ class MainWindow(QMainWindow):
         super().__init__(parent)
         self.setWindowTitle("Spriter")
         self.resize(1200, 800)
+        from spriter.resources import SPRITE_ICO_BYTES
+
+        _pix = QPixmap()
+        _pix.loadFromData(SPRITE_ICO_BYTES)
+        self.setWindowIcon(QIcon(_pix))
 
         self._sprite: Optional[Sprite] = None
         self._settings: Settings = Settings.load()

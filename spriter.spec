@@ -30,6 +30,7 @@ a = Analysis(
         # Spriter internal packages (src layout requires explicit listing)
         'spriter',
         'spriter.app',
+        'spriter.resources',
         'spriter.core',
         'spriter.core.animation',
         'spriter.core.compositor',
@@ -102,7 +103,7 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    # icon='assets/icon.ico',  # Uncomment and supply an icon file to embed one
+    icon='assets/sprite.ico',  # Uncomment and supply an icon file to embed one
 )
 
 coll = COLLECT(

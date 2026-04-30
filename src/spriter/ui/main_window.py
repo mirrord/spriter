@@ -77,6 +77,7 @@ from ..tools.select import RectSelectTool
 from ..tools.text import TextTool
 from ..commands.transform import (
     AdjustmentCommand,
+    AutocropCommand,
     CanvasResizeCommand,
     CropToSelectionCommand,
     FlipCommand,
@@ -187,10 +188,11 @@ class MainWindow(QMainWindow):
             path = None
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
-                self, "Open Project", "", "Spriter files (*.spriter)"
+                self, "Open Project", self._dialog_dir(), "Spriter files (*.spriter)"
             )
         if not path:
             return
+        self._remember_path(path)
         try:
             sprite = load_project(path)
         except Exception as exc:
@@ -222,12 +224,13 @@ class MainWindow(QMainWindow):
             True if saved successfully.
         """
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", "", "Spriter files (*.spriter)"
+            self, "Save Project As", self._dialog_dir(), "Spriter files (*.spriter)"
         )
         if not path:
             return False
         if not path.endswith(".spriter"):
             path += ".spriter"
+        self._remember_path(path)
         return self._do_save(Path(path))
 
     def _do_save(self, path: Path) -> bool:
@@ -462,6 +465,7 @@ class MainWindow(QMainWindow):
         xform_menu.addSeparator()
         self._add_action(xform_menu, "&Canvas Size…", self._prompt_canvas_resize)
         self._add_action(xform_menu, "Crop to S&election", self._crop_to_selection)
+        self._add_action(xform_menu, "Auto&crop", self._autocrop)
         self._add_action(xform_menu, "&Scale Image…", self._prompt_scale)
         self._add_action(xform_menu, "Scale Se&lection…", self._prompt_scale_selection)
         xform_menu.addSeparator()
@@ -936,6 +940,17 @@ class MainWindow(QMainWindow):
         self._push_transform(cmd)
         self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
 
+    def _autocrop(self) -> None:
+        if self._sprite is None:
+            return
+        try:
+            cmd = AutocropCommand(self._sprite)
+        except ValueError as exc:
+            QMessageBox.information(self, "Autocrop", str(exc))
+            return
+        self._push_transform(cmd)
+        self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
+
     def _prompt_scale_selection(self) -> None:
         if self._sprite is None:
             return
@@ -1153,10 +1168,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Frame as PNG", "", "PNG Images (*.png)"
+            self, "Export Frame as PNG", self._dialog_dir(), "PNG Images (*.png)"
         )
         if not path:
             return
+        self._remember_path(path)
         fi = self._canvas.active_frame if self._canvas else 0
         try:
             export_frame(self._sprite, fi, path)
@@ -1167,10 +1183,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         dir_path = QFileDialog.getExistingDirectory(
-            self, "Export All Frames — Choose Folder"
+            self, "Export All Frames — Choose Folder", self._dialog_dir()
         )
         if not dir_path:
             return
+        self._remember_directory(dir_path)
         try:
             export_all_frames(self._sprite, dir_path)
         except Exception as exc:
@@ -1180,10 +1197,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Animated GIF", "", "GIF Images (*.gif)"
+            self, "Export Animated GIF", self._dialog_dir(), "GIF Images (*.gif)"
         )
         if not path:
             return
+        self._remember_path(path)
         try:
             export_gif(self._sprite, path)
         except Exception as exc:
@@ -1193,10 +1211,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Sprite Sheet", "", "PNG Images (*.png)"
+            self, "Export Sprite Sheet", self._dialog_dir(), "PNG Images (*.png)"
         )
         if not path:
             return
+        self._remember_path(path)
         try:
             export_sheet(self._sprite, path)
         except Exception as exc:
@@ -1206,15 +1225,20 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         sheet_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Sprite Sheet (image)", "", "PNG Images (*.png)"
+            self,
+            "Export Sprite Sheet (image)",
+            self._dialog_dir(),
+            "PNG Images (*.png)",
         )
         if not sheet_path:
             return
+        self._remember_path(sheet_path)
         atlas_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Atlas (JSON)", "", "JSON files (*.json)"
+            self, "Export Atlas (JSON)", self._dialog_dir(), "JSON files (*.json)"
         )
         if not atlas_path:
             return
+        self._remember_path(atlas_path)
         try:
             export_atlas(self._sprite, sheet_path, atlas_path)
         except Exception as exc:
@@ -1224,10 +1248,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export as ICO", "", "Icon files (*.ico)"
+            self, "Export as ICO", self._dialog_dir(), "Icon files (*.ico)"
         )
         if not path:
             return
+        self._remember_path(path)
         fi = self._canvas.active_frame if self._canvas else 0
         try:
             from ..core.compositor import composite_frame
@@ -1246,10 +1271,14 @@ class MainWindow(QMainWindow):
 
     def _import_png(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import PNG as Sprite", "", "Images (*.png *.bmp *.jpg *.jpeg *.webp)"
+            self,
+            "Import PNG as Sprite",
+            self._dialog_dir(),
+            "Images (*.png *.bmp *.jpg *.jpeg *.webp)",
         )
         if not path:
             return
+        self._remember_path(path)
         try:
             sprite = import_png(path)
         except Exception as exc:
@@ -1266,10 +1295,11 @@ class MainWindow(QMainWindow):
 
     def _import_gif(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import GIF as Sprite", "", "Animated GIF (*.gif)"
+            self, "Import GIF as Sprite", self._dialog_dir(), "Animated GIF (*.gif)"
         )
         if not path:
             return
+        self._remember_path(path)
         try:
             sprite = import_gif(path)
         except Exception as exc:
@@ -1286,10 +1316,14 @@ class MainWindow(QMainWindow):
 
     def _import_sheet(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import Sprite Sheet", "", "Images (*.png *.bmp *.jpg *.jpeg)"
+            self,
+            "Import Sprite Sheet",
+            self._dialog_dir(),
+            "Images (*.png *.bmp *.jpg *.jpeg)",
         )
         if not path:
             return
+        self._remember_path(path)
         # Best-effort dimension estimation to pre-populate the dialogs.
         est_w, est_h, est_pad = 16, 16, 0
         try:
@@ -1338,11 +1372,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Palette",
-            "",
+            self._dialog_dir(),
             "Palette files (*.pal *.gpl *.hex *.txt);;All files (*)",
         )
         if not path:
             return
+        self._remember_path(path)
         suffix = Path(path).suffix.lower()
         try:
             if suffix == ".gpl":
@@ -1365,11 +1400,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Palette",
-            "",
+            self._dialog_dir(),
             "JASC-PAL (*.pal);;GIMP GPL (*.gpl);;Hex list (*.hex)",
         )
         if not path:
             return
+        self._remember_path(path)
         suffix = Path(path).suffix.lower()
         palette = Palette(self._color_picker._palette_colors)
         try:
@@ -1446,6 +1482,42 @@ class MainWindow(QMainWindow):
         if self._canvas:
             self._canvas.invalidate_cache()
         self._unsaved = True
+
+    # ------------------------------------------------------------------
+    # File-dialog default location
+    # ------------------------------------------------------------------
+
+    def _dialog_dir(self) -> str:
+        """Return the directory file dialogs should open in.
+
+        Defaults to the most recently used location (open / save / import /
+        export).  Returns ``""`` if no directory has been recorded yet, which
+        causes Qt to use its platform default.
+        """
+        last = self._settings.last_directory
+        if last and Path(last).is_dir():
+            return last
+        return ""
+
+    def _remember_path(self, path: str) -> None:
+        """Record *path*'s parent directory and persist settings."""
+        if not path:
+            return
+        self._settings.remember_path(path)
+        try:
+            self._settings.save()
+        except Exception:
+            pass
+
+    def _remember_directory(self, directory: str) -> None:
+        """Record *directory* as the last-used location and persist settings."""
+        if not directory:
+            return
+        self._settings.remember_directory(directory)
+        try:
+            self._settings.save()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Phase 8: Recent files
@@ -1534,10 +1606,14 @@ class MainWindow(QMainWindow):
 
     def _set_reference_image(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Open Reference Image", "", "Images (*.png *.bmp *.jpg *.jpeg)"
+            self,
+            "Open Reference Image",
+            self._dialog_dir(),
+            "Images (*.png *.bmp *.jpg *.jpeg)",
         )
         if not path or self._canvas is None:
             return
+        self._remember_path(path)
         try:
             import numpy as np
             from PIL import Image

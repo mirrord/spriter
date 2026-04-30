@@ -18,6 +18,7 @@ Commands
 * :class:`AdjustmentCommand`    — brightness / contrast / hue / saturation
 * :class:`CanvasResizeCommand`  — resize the canvas (crop / extend every cel)
 * :class:`CropToSelectionCommand` — crop every cel to the selection's bbox
+* :class:`AutocropCommand`      — crop every cel to the union bbox of opaque pixels
 * :class:`ScaleCommand`         — resample all cels to a new size
 * :class:`ScaleSelectionCommand` — resample the selected region of one cel
 """
@@ -623,6 +624,84 @@ class CropToSelectionCommand(Command):
         self._sprite.resize_canvas(self._w, self._h, -self._x0, -self._y0)
         # The bbox occupies the entire new canvas; selection coords are
         # no longer meaningful, so clear it.
+        self._sprite.selection_mask = None
+
+    def undo(self) -> None:
+        assert self._saved_cels is not None
+        assert self._old_width is not None and self._old_height is not None
+        self._sprite.resize_canvas(self._old_width, self._old_height)
+        _restore_all_cels(self._sprite, self._saved_cels)
+        self._sprite.selection_mask = (
+            None if self._saved_mask is None else self._saved_mask.copy()
+        )
+
+
+# ---------------------------------------------------------------------------
+# AutocropCommand
+# ---------------------------------------------------------------------------
+
+
+class AutocropCommand(Command):
+    """Crop the canvas to the union bounding box of all opaque pixels.
+
+    Scans every cel across all layers and frames, finds the smallest axis-aligned
+    rectangle that contains every pixel with ``alpha > 0``, and resizes the
+    canvas to that rectangle.  All frames and layers are cropped consistently
+    so animation and layer registration are preserved.  The selection mask is
+    cleared (its pixel coordinates no longer map onto the new canvas) and
+    restored on undo.
+
+    Args:
+        sprite: The owning sprite.
+
+    Raises:
+        ValueError: If the sprite contains no opaque pixels, or if the content
+            already fills the entire canvas (nothing to crop).
+    """
+
+    def __init__(self, sprite: Sprite) -> None:
+        h, w = sprite.height, sprite.width
+        any_opaque = np.zeros((h, w), dtype=bool)
+        for li in range(sprite.layer_count):
+            for fi in range(sprite.frame_count):
+                cel = sprite.get_cel(li, fi)
+                if cel.pixels is None:
+                    continue
+                any_opaque |= cel.pixels[..., 3] > 0
+        if not bool(any_opaque.any()):
+            raise ValueError("AutocropCommand requires at least one opaque pixel")
+        rows = np.any(any_opaque, axis=1)
+        cols = np.any(any_opaque, axis=0)
+        y_idx = np.where(rows)[0]
+        x_idx = np.where(cols)[0]
+        x0 = int(x_idx[0])
+        y0 = int(y_idx[0])
+        new_w = int(x_idx[-1] - x_idx[0] + 1)
+        new_h = int(y_idx[-1] - y_idx[0] + 1)
+        if x0 == 0 and y0 == 0 and new_w == w and new_h == h:
+            raise ValueError("Nothing to crop — content already fills the canvas")
+        self._sprite = sprite
+        self._x0 = x0
+        self._y0 = y0
+        self._w = new_w
+        self._h = new_h
+        self._old_width: Optional[int] = None
+        self._old_height: Optional[int] = None
+        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._saved_mask: Optional[np.ndarray] = None
+
+    @property
+    def description(self) -> str:
+        return f"Autocrop ({self._w}×{self._h})"
+
+    def execute(self) -> None:
+        self._old_width = self._sprite.width
+        self._old_height = self._sprite.height
+        self._saved_cels = _save_all_cels(self._sprite)
+        mask = self._sprite.selection_mask
+        self._saved_mask = None if mask is None else mask.copy()
+        self._sprite.resize_canvas(self._w, self._h, -self._x0, -self._y0)
+        # Selection coords no longer map onto the new canvas; clear.
         self._sprite.selection_mask = None
 
     def undo(self) -> None:

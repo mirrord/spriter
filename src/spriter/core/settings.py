@@ -58,6 +58,10 @@ class Settings:
     recent_files: List[str]
     max_recent_files: int = 10
 
+    # ── Last-used directory for file dialogs ─────────────────────────
+    # Updated whenever the user opens, imports, exports, or saves a file.
+    last_directory: str = ""
+
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
     keybindings: Dict[str, str]
@@ -87,6 +91,7 @@ class Settings:
         self.theme = "dark"
         self.recent_files: List[str] = []
         self.max_recent_files = 10
+        self.last_directory: str = ""
         self.keybindings: Dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
@@ -106,6 +111,7 @@ class Settings:
             "theme": self.theme,
             "recent_files": list(self.recent_files),
             "max_recent_files": self.max_recent_files,
+            "last_directory": self.last_directory,
             "keybindings": dict(self.keybindings),
         }
 
@@ -137,6 +143,7 @@ class Settings:
         if isinstance(rf, list):
             s.recent_files = [str(p) for p in rf]
         s.max_recent_files = int(data.get("max_recent_files", s.max_recent_files))
+        s.last_directory = str(data.get("last_directory", s.last_directory))
         kb = data.get("keybindings")
         if isinstance(kb, dict):
             s.keybindings = {str(k): str(v) for k, v in kb.items()}
@@ -188,3 +195,34 @@ class Settings:
             self.recent_files.remove(path)
         self.recent_files.insert(0, path)
         self.recent_files = self.recent_files[: self.max_recent_files]
+
+    # ------------------------------------------------------------------
+    # Last-directory helper
+    # ------------------------------------------------------------------
+
+    def remember_path(self, path: str) -> None:
+        """Record the parent directory of *path* as the last-used location.
+
+        Used as the default starting directory for subsequent file dialogs
+        (open, save, import, export).  Silently ignored for blank input.
+
+        Args:
+            path: A file path whose parent directory should be remembered.
+        """
+        if not path:
+            return
+        parent = Path(path).expanduser().resolve().parent
+        self.last_directory = str(parent)
+
+    def remember_directory(self, directory: str) -> None:
+        """Record *directory* itself as the last-used location.
+
+        Use this for ``QFileDialog.getExistingDirectory`` results, where the
+        user chose a folder rather than a file.
+
+        Args:
+            directory: A directory path to remember.
+        """
+        if not directory:
+            return
+        self.last_directory = str(Path(directory).expanduser().resolve())

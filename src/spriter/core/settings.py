@@ -58,9 +58,12 @@ class Settings:
     recent_files: List[str]
     max_recent_files: int = 10
 
-    # ── Last-used directory for file dialogs ─────────────────────────
-    # Updated whenever the user opens, imports, exports, or saves a file.
-    last_directory: str = ""
+    # ── Last-used directories for file dialogs ───────────────────────
+    # Separate locations for opening vs. saving operations.
+    # last_open_directory: updated when opening/importing files
+    # last_save_directory: updated when saving/exporting files
+    last_open_directory: str = ""
+    last_save_directory: str = ""
 
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
@@ -91,7 +94,8 @@ class Settings:
         self.theme = "dark"
         self.recent_files: List[str] = []
         self.max_recent_files = 10
-        self.last_directory: str = ""
+        self.last_open_directory: str = ""
+        self.last_save_directory: str = ""
         self.keybindings: Dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
@@ -111,7 +115,8 @@ class Settings:
             "theme": self.theme,
             "recent_files": list(self.recent_files),
             "max_recent_files": self.max_recent_files,
-            "last_directory": self.last_directory,
+            "last_open_directory": self.last_open_directory,
+            "last_save_directory": self.last_save_directory,
             "keybindings": dict(self.keybindings),
         }
 
@@ -143,7 +148,14 @@ class Settings:
         if isinstance(rf, list):
             s.recent_files = [str(p) for p in rf]
         s.max_recent_files = int(data.get("max_recent_files", s.max_recent_files))
-        s.last_directory = str(data.get("last_directory", s.last_directory))
+        # Backward compatibility: migrate old last_directory to both new fields
+        old_last_dir = data.get("last_directory", "")
+        s.last_open_directory = str(
+            data.get("last_open_directory", old_last_dir or s.last_open_directory)
+        )
+        s.last_save_directory = str(
+            data.get("last_save_directory", old_last_dir or s.last_save_directory)
+        )
         kb = data.get("keybindings")
         if isinstance(kb, dict):
             s.keybindings = {str(k): str(v) for k, v in kb.items()}
@@ -197,14 +209,14 @@ class Settings:
         self.recent_files = self.recent_files[: self.max_recent_files]
 
     # ------------------------------------------------------------------
-    # Last-directory helper
+    # Last-directory helpers
     # ------------------------------------------------------------------
 
-    def remember_path(self, path: str) -> None:
-        """Record the parent directory of *path* as the last-used location.
+    def remember_open_path(self, path: str) -> None:
+        """Record the parent directory of *path* as the last-used open location.
 
-        Used as the default starting directory for subsequent file dialogs
-        (open, save, import, export).  Silently ignored for blank input.
+        Used as the default starting directory for subsequent open/import dialogs.
+        Silently ignored for blank input.
 
         Args:
             path: A file path whose parent directory should be remembered.
@@ -212,17 +224,44 @@ class Settings:
         if not path:
             return
         parent = Path(path).expanduser().resolve().parent
-        self.last_directory = str(parent)
+        self.last_open_directory = str(parent)
 
-    def remember_directory(self, directory: str) -> None:
-        """Record *directory* itself as the last-used location.
+    def remember_save_path(self, path: str) -> None:
+        """Record the parent directory of *path* as the last-used save location.
 
-        Use this for ``QFileDialog.getExistingDirectory`` results, where the
-        user chose a folder rather than a file.
+        Used as the default starting directory for subsequent save/export dialogs.
+        Silently ignored for blank input.
+
+        Args:
+            path: A file path whose parent directory should be remembered.
+        """
+        if not path:
+            return
+        parent = Path(path).expanduser().resolve().parent
+        self.last_save_directory = str(parent)
+
+    def remember_open_directory(self, directory: str) -> None:
+        """Record *directory* itself as the last-used open location.
+
+        Use this for ``QFileDialog.getExistingDirectory`` results when
+        opening/importing, where the user chose a folder rather than a file.
 
         Args:
             directory: A directory path to remember.
         """
         if not directory:
             return
-        self.last_directory = str(Path(directory).expanduser().resolve())
+        self.last_open_directory = str(Path(directory).expanduser().resolve())
+
+    def remember_save_directory(self, directory: str) -> None:
+        """Record *directory* itself as the last-used save location.
+
+        Use this for ``QFileDialog.getExistingDirectory`` results when
+        saving/exporting, where the user chose a folder rather than a file.
+
+        Args:
+            directory: A directory path to remember.
+        """
+        if not directory:
+            return
+        self.last_save_directory = str(Path(directory).expanduser().resolve())

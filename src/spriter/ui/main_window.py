@@ -188,11 +188,14 @@ class MainWindow(QMainWindow):
             path = None
         if path is None:
             path, _ = QFileDialog.getOpenFileName(
-                self, "Open Project", self._dialog_dir(), "Spriter files (*.spriter)"
+                self,
+                "Open Project",
+                self._dialog_dir("open"),
+                "Spriter files (*.spriter)",
             )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         try:
             sprite = load_project(path)
         except Exception as exc:
@@ -224,13 +227,16 @@ class MainWindow(QMainWindow):
             True if saved successfully.
         """
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project As", self._dialog_dir(), "Spriter files (*.spriter)"
+            self,
+            "Save Project As",
+            self._dialog_dir("save"),
+            "Spriter files (*.spriter)",
         )
         if not path:
             return False
         if not path.endswith(".spriter"):
             path += ".spriter"
-        self._remember_path(path)
+        self._remember_path(path, "save")
         return self._do_save(Path(path))
 
     def _do_save(self, path: Path) -> bool:
@@ -1168,11 +1174,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Frame as PNG", self._dialog_dir(), "PNG Images (*.png)"
+            self, "Export Frame as PNG", self._dialog_dir("save"), "PNG Images (*.png)"
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "save")
         fi = self._canvas.active_frame if self._canvas else 0
         try:
             export_frame(self._sprite, fi, path)
@@ -1183,11 +1189,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         dir_path = QFileDialog.getExistingDirectory(
-            self, "Export All Frames — Choose Folder", self._dialog_dir()
+            self, "Export All Frames — Choose Folder", self._dialog_dir("save")
         )
         if not dir_path:
             return
-        self._remember_directory(dir_path)
+        self._remember_directory(dir_path, "save")
         try:
             export_all_frames(self._sprite, dir_path)
         except Exception as exc:
@@ -1197,11 +1203,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Animated GIF", self._dialog_dir(), "GIF Images (*.gif)"
+            self, "Export Animated GIF", self._dialog_dir("save"), "GIF Images (*.gif)"
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "save")
         try:
             export_gif(self._sprite, path)
         except Exception as exc:
@@ -1211,11 +1217,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export Sprite Sheet", self._dialog_dir(), "PNG Images (*.png)"
+            self, "Export Sprite Sheet", self._dialog_dir("save"), "PNG Images (*.png)"
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "save")
         try:
             export_sheet(self._sprite, path)
         except Exception as exc:
@@ -1227,18 +1233,18 @@ class MainWindow(QMainWindow):
         sheet_path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Sprite Sheet (image)",
-            self._dialog_dir(),
+            self._dialog_dir("save"),
             "PNG Images (*.png)",
         )
         if not sheet_path:
             return
-        self._remember_path(sheet_path)
+        self._remember_path(sheet_path, "save")
         atlas_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Atlas (JSON)", self._dialog_dir(), "JSON files (*.json)"
+            self, "Export Atlas (JSON)", self._dialog_dir("save"), "JSON files (*.json)"
         )
         if not atlas_path:
             return
-        self._remember_path(atlas_path)
+        self._remember_path(atlas_path, "save")
         try:
             export_atlas(self._sprite, sheet_path, atlas_path)
         except Exception as exc:
@@ -1248,11 +1254,11 @@ class MainWindow(QMainWindow):
         if self._sprite is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Export as ICO", self._dialog_dir(), "Icon files (*.ico)"
+            self, "Export as ICO", self._dialog_dir("save"), "Icon files (*.ico)"
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "save")
         fi = self._canvas.active_frame if self._canvas else 0
         try:
             from ..core.compositor import composite_frame
@@ -1273,12 +1279,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Import PNG as Sprite",
-            self._dialog_dir(),
+            self._dialog_dir("open"),
             "Images (*.png *.bmp *.jpg *.jpeg *.webp)",
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         try:
             sprite = import_png(path)
         except Exception as exc:
@@ -1295,11 +1301,14 @@ class MainWindow(QMainWindow):
 
     def _import_gif(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Import GIF as Sprite", self._dialog_dir(), "Animated GIF (*.gif)"
+            self,
+            "Import GIF as Sprite",
+            self._dialog_dir("open"),
+            "Animated GIF (*.gif)",
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         try:
             sprite = import_gif(path)
         except Exception as exc:
@@ -1318,12 +1327,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Sprite Sheet",
-            self._dialog_dir(),
+            self._dialog_dir("open"),
             "Images (*.png *.bmp *.jpg *.jpeg)",
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         # Best-effort dimension estimation to pre-populate the dialogs.
         est_w, est_h, est_pad = 16, 16, 0
         try:
@@ -1372,12 +1381,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Import Palette",
-            self._dialog_dir(),
+            self._dialog_dir("open"),
             "Palette files (*.pal *.gpl *.hex *.txt);;All files (*)",
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         suffix = Path(path).suffix.lower()
         try:
             if suffix == ".gpl":
@@ -1400,12 +1409,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getSaveFileName(
             self,
             "Export Palette",
-            self._dialog_dir(),
+            self._dialog_dir("save"),
             "JASC-PAL (*.pal);;GIMP GPL (*.gpl);;Hex list (*.hex)",
         )
         if not path:
             return
-        self._remember_path(path)
+        self._remember_path(path, "save")
         suffix = Path(path).suffix.lower()
         palette = Palette(self._color_picker._palette_colors)
         try:
@@ -1487,33 +1496,56 @@ class MainWindow(QMainWindow):
     # File-dialog default location
     # ------------------------------------------------------------------
 
-    def _dialog_dir(self) -> str:
+    def _dialog_dir(self, mode: str = "open") -> str:
         """Return the directory file dialogs should open in.
 
-        Defaults to the most recently used location (open / save / import /
-        export).  Returns ``""`` if no directory has been recorded yet, which
-        causes Qt to use its platform default.
+        Defaults to the most recently used location for the given mode
+        ("open" for open/import, "save" for save/export).  Returns ``""`` if no
+        directory has been recorded yet, which causes Qt to use its platform default.
+
+        Args:
+            mode: Either "open" or "save" to determine which directory to use.
         """
-        last = self._settings.last_directory
+        last = (
+            self._settings.last_open_directory
+            if mode == "open"
+            else self._settings.last_save_directory
+        )
         if last and Path(last).is_dir():
             return last
         return ""
 
-    def _remember_path(self, path: str) -> None:
-        """Record *path*'s parent directory and persist settings."""
+    def _remember_path(self, path: str, mode: str = "open") -> None:
+        """Record *path*'s parent directory and persist settings.
+
+        Args:
+            path: File path to remember.
+            mode: Either "open" or "save" to determine which directory to update.
+        """
         if not path:
             return
-        self._settings.remember_path(path)
+        if mode == "open":
+            self._settings.remember_open_path(path)
+        else:
+            self._settings.remember_save_path(path)
         try:
             self._settings.save()
         except Exception:
             pass
 
-    def _remember_directory(self, directory: str) -> None:
-        """Record *directory* as the last-used location and persist settings."""
+    def _remember_directory(self, directory: str, mode: str = "open") -> None:
+        """Record *directory* as the last-used location and persist settings.
+
+        Args:
+            directory: Directory path to remember.
+            mode: Either "open" or "save" to determine which directory to update.
+        """
         if not directory:
             return
-        self._settings.remember_directory(directory)
+        if mode == "open":
+            self._settings.remember_open_directory(directory)
+        else:
+            self._settings.remember_save_directory(directory)
         try:
             self._settings.save()
         except Exception:
@@ -1608,12 +1640,12 @@ class MainWindow(QMainWindow):
         path, _ = QFileDialog.getOpenFileName(
             self,
             "Open Reference Image",
-            self._dialog_dir(),
+            self._dialog_dir("open"),
             "Images (*.png *.bmp *.jpg *.jpeg)",
         )
         if not path or self._canvas is None:
             return
-        self._remember_path(path)
+        self._remember_path(path, "open")
         try:
             import numpy as np
             from PIL import Image

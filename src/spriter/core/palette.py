@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import Sequence, list, tuple
+from typing import Sequence
 
 # A color is stored as a 4-tuple (R, G, B, A) with values 0–255.
 Color = tuple[int, int, int, int]

@@ -70,7 +70,12 @@ from ..io.gif_io import export_gif, import_gif
 from ..io.png_io import export_all_frames, export_frame, import_png
 from ..io.project_io import load as load_project
 from ..io.project_io import save as save_project
-from ..io.spritesheet import export_atlas, export_sheet, import_sheet
+from ..io.spritesheet import (
+    export_atlas,
+    export_sheet,
+    import_sheet,
+    import_sheet_auto,
+)
 from ..tools.contiguous_delete import ContiguousDeleteTool
 from ..tools.ellipse import EllipseTool
 from ..tools.eraser import EraserTool
@@ -1325,6 +1330,32 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._remember_path(path, "open")
+        # Sheets with irregular frame spacing use contour-based auto-detection
+        # instead of a fixed grid.
+        inconsistent = (
+            QMessageBox.question(
+                self,
+                "Import Sheet",
+                "Does this sheet have inconsistent spacing between frames?\n\n"
+                "Choose Yes to auto-detect each frame and centre it in a "
+                "uniform cell; choose No to slice on a fixed grid.",
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+        if inconsistent:
+            try:
+                sprite = import_sheet_auto(path)
+            except Exception as exc:
+                QMessageBox.critical(self, "Import Error", str(exc))
+                return
+            self._sprite = sprite
+            self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+            self._current_path = None
+            self._unsaved = True
+            self._rebuild_ui()
+            w, h = sprite.width, sprite.height
+            self._status_canvas.setText(f"{w}\u00d7{h}")
+            return
         # Best-effort dimension estimation to pre-populate the dialogs.
         est_w, est_h, est_pad = 16, 16, 0
         try:

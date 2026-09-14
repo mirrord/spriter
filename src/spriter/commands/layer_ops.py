@@ -18,8 +18,6 @@ Commands
 
 from __future__ import annotations
 
-from typing import dict
-
 import numpy as np
 
 from ..commands.base import Command

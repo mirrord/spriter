@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # CanvasWidget
 # ---------------------------------------------------------------------------
@@ -149,9 +148,8 @@ class TestCanvasWidget:
 
     def test_scroll_wheel_zooms_in(self, qapp):
         """Plain scroll-up increases zoom without Ctrl."""
-        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtCore import QPoint, QPointF, Qt
         from PyQt6.QtGui import QWheelEvent
-        from PyQt6.QtCore import Qt
 
         from spriter.commands.base import CommandStack
         from spriter.core.sprite import Sprite
@@ -179,9 +177,8 @@ class TestCanvasWidget:
 
     def test_scroll_wheel_zooms_out(self, qapp):
         """Plain scroll-down decreases zoom."""
-        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtCore import QPoint, QPointF, Qt
         from PyQt6.QtGui import QWheelEvent
-        from PyQt6.QtCore import Qt
 
         from spriter.commands.base import CommandStack
         from spriter.core.sprite import Sprite
@@ -210,9 +207,8 @@ class TestCanvasWidget:
 
     def test_scroll_wheel_zoom_emits_signal(self, qapp):
         """Scroll zoom emits zoom_changed."""
-        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtCore import QPoint, QPointF, Qt
         from PyQt6.QtGui import QWheelEvent
-        from PyQt6.QtCore import Qt
 
         from spriter.commands.base import CommandStack
         from spriter.core.sprite import Sprite
@@ -242,9 +238,8 @@ class TestCanvasWidget:
 
     def test_scroll_wheel_zoom_anchors_cursor(self, qapp):
         """The canvas point under the cursor stays fixed during scroll zoom."""
-        from PyQt6.QtCore import QPoint, QPointF
+        from PyQt6.QtCore import QPoint, QPointF, Qt
         from PyQt6.QtGui import QWheelEvent
-        from PyQt6.QtCore import Qt
 
         from spriter.commands.base import CommandStack
         from spriter.core.sprite import Sprite
@@ -296,7 +291,7 @@ class TestToolBar:
         assert tb.current_tool == "pencil"
 
     def test_all_tool_buttons_present(self, qapp):
-        from spriter.ui.toolbar import ToolBar, _TOOLS
+        from spriter.ui.toolbar import _TOOLS, ToolBar
 
         tb = ToolBar()
         for name, _ in _TOOLS:
@@ -410,7 +405,7 @@ class TestColorPicker:
         assert cp.background == (10, 20, 30, 100)
 
     def test_palette_buttons_present(self, qapp):
-        from spriter.ui.color_picker import ColorPicker, _DEFAULT_PALETTE
+        from spriter.ui.color_picker import _DEFAULT_PALETTE, ColorPicker
 
         cp = ColorPicker()
         assert len(cp._palette_buttons) == len(_DEFAULT_PALETTE)
@@ -465,9 +460,15 @@ class TestMainWindow:
         window.close()
 
     def test_new_project_default_size(self, qapp):
+        from unittest.mock import patch
+
+        from spriter.core.settings import Settings
         from spriter.ui.main_window import MainWindow
 
-        window = MainWindow()
+        # Use code-default settings so the assertion isn't confounded by (and
+        # never writes to) the user's persisted settings.json.
+        with patch("spriter.ui.main_window.Settings.load", return_value=Settings()):
+            window = MainWindow()
         assert window._sprite is not None
         assert window._sprite.width == 32
         assert window._sprite.height == 32
@@ -486,6 +487,7 @@ class TestMainWindow:
     def test_new_project_does_not_duplicate_dock_widgets(self, qapp):
         """Calling new_project() multiple times must not add extra dock widgets."""
         from PyQt6.QtWidgets import QDockWidget
+
         from spriter.ui.main_window import MainWindow
 
         window = MainWindow()
@@ -503,6 +505,7 @@ class TestMainWindow:
 
     def test_undo_action_shortcut(self, qapp):
         from PyQt6.QtGui import QKeySequence
+
         from spriter.ui.main_window import MainWindow
 
         window = MainWindow()
@@ -511,6 +514,7 @@ class TestMainWindow:
 
     def test_redo_action_shortcut(self, qapp):
         from PyQt6.QtGui import QKeySequence
+
         from spriter.ui.main_window import MainWindow
 
         window = MainWindow()

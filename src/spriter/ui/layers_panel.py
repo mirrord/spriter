@@ -4,7 +4,7 @@
 """Layers panel — list view with thumbnails, visibility, lock, opacity, and
 blend mode controls.
 
-:class:`LayersPanel` wraps a :class:`~PyQt6.QtWidgets.QlistWidget` that shows
+:class:`LayersPanel` wraps a :class:`~PyQt6.QtWidgets.QListWidget` that shows
 one row per layer (top → bottom).  Drag-to-reorder is handled via Qt's
 built-in internal-move drag-drop, with a :class:`~spriter.commands.layer_ops.MoveLayerCommand`
 pushed on drop so the action is undoable.
@@ -30,8 +30,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QlistWidget,
-    QlistWidgetItem,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -71,8 +71,8 @@ _EYE_X_START = _THUMB_SIZE + 6
 _EYE_X_END = _THUMB_SIZE + 32
 
 
-class _Layerlist(QlistWidget):
-    """QlistWidget subclass that intercepts clicks on the eye-icon column."""
+class _LayerList(QListWidget):
+    """QListWidget subclass that intercepts clicks on the eye-icon column."""
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -178,7 +178,7 @@ class LayersPanel(QWidget):
         root.setSpacing(4)
 
         # ── Layer list ────────────────────────────────────────────────
-        self._list = _Layerlist(self)
+        self._list = _LayerList(self)
         self._list.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
         self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -265,7 +265,7 @@ class LayersPanel(QWidget):
                 if layer.role == LayerRole.BACKGROUND
                 else ""
             )
-            item = QlistWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
+            item = QListWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
             item.setData(Qt.ItemDataRole.UserRole, li)  # store actual layer index
             self._list.addItem(item)
 

@@ -8,6 +8,7 @@ Functions
 * :func:`export_sheet`  — pack all frames into a single image file
 * :func:`export_atlas`  — pack frames + write a JSON atlas
 * :func:`import_sheet`  — split a sprite sheet into frames of a new Sprite
+* :func:`import_sheet_auto`  — detect irregularly spaced frames and centre them
 * :func:`estimate_sheet_layout`  — guess frame size + padding from a sheet image
 
 Enums
@@ -21,7 +22,7 @@ import json
 from collections import Counter
 from enum import Enum
 from pathlib import Path
-from typing import Namedtuple
+from typing import NamedTuple
 
 import numpy as np
 from PIL import Image
@@ -247,7 +248,7 @@ def import_sheet(
 # ---------------------------------------------------------------------------
 
 
-class EstimatedLayout(Namedtuple):
+class EstimatedLayout(NamedTuple):
     """Estimated frame dimensions for a sprite sheet.
 
     Attributes:
@@ -316,6 +317,190 @@ def _period_from_mask(has_content: np.ndarray) -> int | None:
     return int(stride)
 
 
+def _load_rgba(source: str | Path | np.ndarray | Image.Image) -> np.ndarray:
+    """Load *source* to an ``H×W×4`` ``uint8`` RGBA array."""
+    if isinstance(source, np.ndarray):
+        arr = source
+        if arr.ndim == 2:
+            arr = np.stack([arr, arr, arr, np.full_like(arr, 255)], axis=-1)
+        elif arr.shape[-1] == 3:
+            alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
+            arr = np.concatenate([arr, alpha], axis=-1)
+        return np.ascontiguousarray(arr, dtype=np.uint8)
+    if isinstance(source, Image.Image):
+        return np.asarray(source.convert("RGBA"), dtype=np.uint8)
+    with Image.open(str(source)) as img:
+        return np.asarray(img.convert("RGBA"), dtype=np.uint8)
+
+
+def _content_mask(arr: np.ndarray) -> np.ndarray:
+    """Boolean ``H×W`` mask of "is content" pixels.
+
+    Uses the alpha channel when the sheet has any transparency; otherwise
+    falls back to distance from the most common corner colour (background).
+    A fully-opaque sheet whose corners disagree is treated as all content.
+    """
+    h, w = arr.shape[:2]
+    alpha = arr[..., 3]
+    if alpha.min() < 255:
+        return alpha > 0
+    corners = [
+        tuple(arr[0, 0, :3]),
+        tuple(arr[0, -1, :3]),
+        tuple(arr[-1, 0, :3]),
+        tuple(arr[-1, -1, :3]),
+    ]
+    bg, bg_count = Counter(corners).most_common(1)[0]
+    if bg_count >= 2:
+        bg_arr = np.array(bg, dtype=np.uint8)
+        return (arr[..., :3] != bg_arr).any(axis=-1)
+    return np.ones((h, w), dtype=bool)
+
+
+def _label_components(
+    mask: np.ndarray, *, connectivity: int = 8
+) -> tuple[np.ndarray, int]:
+    """Label connected components of a boolean mask (pure NumPy union-find).
+
+    Args:
+        mask: Boolean ``H×W`` occupancy mask.
+        connectivity: ``4`` (orthogonal) or ``8`` (orthogonal + diagonal).
+
+    Returns:
+        ``(labels, count)`` where ``labels`` is an ``H×W`` ``int`` array with
+        ``0`` for background and ``1..count`` for each component, and
+        ``count`` is the number of components found.
+    """
+    mask = np.asarray(mask, dtype=bool)
+    h, w = mask.shape
+    idx = np.full((h, w), -1, dtype=np.int64)
+    ys, xs = np.nonzero(mask)
+    k = ys.size
+    if k == 0:
+        return np.zeros((h, w), dtype=np.int64), 0
+    idx[ys, xs] = np.arange(k)
+
+    parent = np.arange(k, dtype=np.int64)
+
+    def find(a: int) -> int:
+        root = a
+        while parent[root] != root:
+            root = parent[root]
+        while parent[a] != root:
+            parent[a], a = root, parent[a]
+        return root
+
+    def union_pairs(a: np.ndarray, b: np.ndarray) -> None:
+        for ia, ib in zip(a.tolist(), b.tolist()):
+            ra, rb = find(ia), find(ib)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+
+    # Orthogonal neighbours (right, down).
+    pair = mask[:, :-1] & mask[:, 1:]
+    union_pairs(idx[:, :-1][pair], idx[:, 1:][pair])
+    pair = mask[:-1, :] & mask[1:, :]
+    union_pairs(idx[:-1, :][pair], idx[1:, :][pair])
+
+    if connectivity == 8:
+        # Diagonal neighbours (down-right, down-left).
+        pair = mask[:-1, :-1] & mask[1:, 1:]
+        union_pairs(idx[:-1, :-1][pair], idx[1:, 1:][pair])
+        pair = mask[:-1, 1:] & mask[1:, :-1]
+        union_pairs(idx[:-1, 1:][pair], idx[1:, :-1][pair])
+
+    roots = np.array([find(i) for i in range(k)], dtype=np.int64)
+    uniq, remapped = np.unique(roots, return_inverse=True)
+    labels = np.zeros((h, w), dtype=np.int64)
+    labels[ys, xs] = remapped + 1
+    return labels, int(uniq.size)
+
+
+def import_sheet_auto(
+    source: str | Path | np.ndarray | Image.Image,
+) -> Sprite:
+    """Import a sprite sheet with inconsistent frame spacing.
+
+    Detects individual frame candidates via 8-connected component labeling
+    of a content mask, sizes every frame to the maximum candidate width and
+    height, and centres each candidate (without stretching) on its own
+    transparent frame.  Candidates are ordered left-to-right within a row,
+    rows top-to-bottom.
+
+    Args:
+        source: Path to an image file, a PIL Image, or an ``H×W×{3,4}``
+            ``uint8`` NumPy array.
+
+    Returns:
+        A new :class:`~spriter.core.sprite.Sprite` with one layer and one
+        frame per detected candidate.
+
+    Raises:
+        ValueError: If no frame candidates are detected.
+    """
+    arr = _load_rgba(source)
+    h, w = arr.shape[:2]
+    if h == 0 or w == 0:
+        raise ValueError("Sprite sheet image is empty.")
+
+    mask = _content_mask(arr)
+    labels, count = _label_components(mask, connectivity=8)
+    if count == 0:
+        raise ValueError("No sprite frames detected in the sheet.")
+
+    # Bounding box per component (label ids are 1..count).
+    boxes: list[tuple[int, int, int, int]] = []  # (y0, y1, x0, x1) inclusive
+    for lbl in range(1, count + 1):
+        cys, cxs = np.nonzero(labels == lbl)
+        boxes.append((int(cys.min()), int(cys.max()), int(cxs.min()), int(cxs.max())))
+
+    frame_w = max(x1 - x0 + 1 for _, _, x0, x1 in boxes)
+    frame_h = max(y1 - y0 + 1 for y0, y1, _, _ in boxes)
+
+    # Order: group into rows by vertical overlap, rows top-to-bottom,
+    # left-to-right within each row.
+    order = sorted(range(count), key=lambda i: (boxes[i][0], boxes[i][2]))
+    rows: list[list[int]] = []
+    row_bottom: list[int] = []
+    for i in order:
+        y0, y1, _, _ = boxes[i]
+        placed = False
+        for r, bottom in enumerate(row_bottom):
+            if y0 <= bottom:  # vertical overlap with an existing row band
+                rows[r].append(i)
+                row_bottom[r] = max(bottom, y1)
+                placed = True
+                break
+        if not placed:
+            rows.append([i])
+            row_bottom.append(y1)
+    ordered: list[int] = []
+    for r in sorted(range(len(rows)), key=lambda r: min(boxes[i][0] for i in rows[r])):
+        ordered.extend(sorted(rows[r], key=lambda i: boxes[i][2]))
+
+    sprite = Sprite(frame_w, frame_h)
+    sprite.add_layer("Background")
+    for _ in range(count):
+        sprite.add_frame()
+
+    for fi, i in enumerate(ordered):
+        y0, y1, x0, x1 = boxes[i]
+        bw = x1 - x0 + 1
+        bh = y1 - y0 + 1
+        crop = arr[y0 : y1 + 1, x0 : x1 + 1].copy()
+        # Suppress pixels belonging to a different component (neighbour bleed).
+        crop_labels = labels[y0 : y1 + 1, x0 : x1 + 1]
+        other = (crop_labels != 0) & (crop_labels != (i + 1))
+        crop[other] = 0
+        cel = np.zeros((frame_h, frame_w, 4), dtype=np.uint8)
+        oy = (frame_h - bh) // 2
+        ox = (frame_w - bw) // 2
+        cel[oy : oy + bh, ox : ox + bw] = crop
+        sprite.set_cel_pixels(0, fi, cel)
+
+    return sprite
+
+
 def estimate_sheet_layout(
     source: str | Path | np.ndarray | Image.Image,
 ) -> EstimatedLayout:
@@ -346,45 +531,12 @@ def estimate_sheet_layout(
     Returns:
         An :class:`EstimatedLayout` ``(frame_width, frame_height, padding=0)``.
     """
-    # --- Load to an RGBA uint8 array -------------------------------------
-    if isinstance(source, np.ndarray):
-        arr = source
-        if arr.ndim == 2:
-            arr = np.stack([arr, arr, arr, np.full_like(arr, 255)], axis=-1)
-        elif arr.shape[-1] == 3:
-            alpha = np.full(arr.shape[:2] + (1,), 255, dtype=np.uint8)
-            arr = np.concatenate([arr, alpha], axis=-1)
-    elif isinstance(source, Image.Image):
-        arr = np.asarray(source.convert("RGBA"))
-    else:
-        with Image.open(str(source)) as img:
-            arr = np.asarray(img.convert("RGBA"))
-
+    arr = _load_rgba(source)
     h, w = arr.shape[:2]
     if h == 0 or w == 0:
         return EstimatedLayout(max(w, 1), max(h, 1), 0)
 
-    # --- Build occupancy mask -------------------------------------------
-    alpha = arr[..., 3]
-    if alpha.min() < 255:
-        mask: np.ndarray = alpha > 0
-    else:
-        # Use distance from the most common corner colour as the signal.
-        corners = [
-            tuple(arr[0, 0, :3]),
-            tuple(arr[0, -1, :3]),
-            tuple(arr[-1, 0, :3]),
-            tuple(arr[-1, -1, :3]),
-        ]
-        bg, bg_count = Counter(corners).most_common(1)[0]
-        if bg_count >= 2:
-            bg_arr = np.array(bg, dtype=np.uint8)
-            mask = (arr[..., :3] != bg_arr).any(axis=-1)
-        else:
-            # No corner agrees: treat the whole sheet as filled and let
-            # the divisor fallback decide.
-            mask = np.ones((h, w), dtype=bool)
-
+    mask = _content_mask(arr)
     col_has = np.asarray(mask.any(axis=0))
     row_has = np.asarray(mask.any(axis=1))
 

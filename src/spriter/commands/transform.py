@@ -25,8 +25,6 @@ Commands
 
 from __future__ import annotations
 
-from typing import dict, tuple
-
 import numpy as np
 
 from ..commands.base import Command
@@ -140,12 +138,16 @@ class FlipCommand(Command):
 
 
 class RotateCommand(Command):
-    """Rotate the pixels of one cel.
+    """Rotate the entire canvas.
+
+    Every cel across all layers and frames is rotated together.  For 90°/270°
+    the canvas width and height are swapped so non-square sprites rotate
+    cleanly; 180° and arbitrary angles preserve the canvas dimensions.
 
     Args:
         sprite: The owning sprite.
-        layer_index: Layer to operate on.
-        frame_index: Frame to operate on.
+        layer_index: Retained for API compatibility (rotation is whole-canvas).
+        frame_index: Retained for API compatibility (rotation is whole-canvas).
         angle: Rotation angle.  One of ``90``, ``-90``, ``180``, or any
             arbitrary integer/float value.  For 90/180/-90 the exact
             ``numpy.rot90`` path is used; other values use PIL nearest-neighbour.
@@ -162,37 +164,43 @@ class RotateCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._angle = angle
-        self._old_pixels: np.ndarray | None = None
+        self._old_cels: dict[CelKey, np.ndarray] | None = None
+        self._old_size: tuple[int, int] | None = None
 
     @property
     def description(self) -> str:
         return f"Rotate {self._angle}°"
 
     def execute(self) -> None:
-        pixels = _get_pixels(self._sprite, self._li, self._fi)
-        self._old_pixels = pixels.copy()
+        self._old_cels = _save_all_cels(self._sprite)
+        self._old_size = (self._sprite.width, self._sprite.height)
         ang = self._angle % 360
-        if ang == 90:
-            result = np.rot90(pixels, k=3)  # 90° CW == -1 anti-clockwise turns
-        elif ang == 180:
-            result = np.rot90(pixels, k=2)
-        elif ang == 270:
-            result = np.rot90(pixels, k=1)  # 90° CCW
+        quarter = {90: 3, 180: 2, 270: 1}.get(ang)  # np.rot90 turns (CCW)
+        if quarter is not None:
+            rotated = {
+                key: np.rot90(px, k=quarter) for key, px in self._old_cels.items()
+            }
+            if ang in (90, 270):
+                # Swap canvas dimensions before writing the transposed cels.
+                self._sprite.resize_canvas(self._old_size[1], self._old_size[0])
+            for (li, fi), px in rotated.items():
+                self._sprite.set_cel_pixels(li, fi, px)
         else:
             from PIL import Image as _PILImage
 
-            pil_img = _PILImage.fromarray(pixels, mode="RGBA")
-            pil_img = pil_img.rotate(
-                -self._angle,  # PIL rotates counter-clockwise; negate for CW
-                resample=_PILImage.Resampling.NEAREST,
-                expand=False,
-            )
-            result = np.array(pil_img, dtype=np.uint8)
-        _set_pixels(self._sprite, self._li, self._fi, result)
+            for (li, fi), px in self._old_cels.items():
+                pil_img = _PILImage.fromarray(px, mode="RGBA").rotate(
+                    -self._angle,  # PIL rotates counter-clockwise; negate for CW
+                    resample=_PILImage.Resampling.NEAREST,
+                    expand=False,
+                )
+                self._sprite.set_cel_pixels(li, fi, np.array(pil_img, dtype=np.uint8))
 
     def undo(self) -> None:
-        assert self._old_pixels is not None
-        _set_pixels(self._sprite, self._li, self._fi, self._old_pixels)
+        assert self._old_cels is not None and self._old_size is not None
+        if (self._sprite.width, self._sprite.height) != self._old_size:
+            self._sprite.resize_canvas(*self._old_size)
+        _restore_all_cels(self._sprite, self._old_cels)
 
 
 # ---------------------------------------------------------------------------

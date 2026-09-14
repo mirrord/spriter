@@ -12,8 +12,6 @@ Features tested:
 
 from __future__ import annotations
 
-from typing import list, tuple
-
 # ===========================================================================
 # Phase A: Palette import/export in File menu
 # ===========================================================================

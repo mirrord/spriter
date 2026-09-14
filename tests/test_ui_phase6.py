@@ -11,7 +11,6 @@ from __future__ import annotations
 import numpy as np
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -175,6 +174,54 @@ class TestRotateCommand:
         cmd.execute()
         cmd.undo()
         assert np.array_equal(_get_pixels(s), pixels)
+
+    def test_rotate_90_non_square_swaps_canvas(self):
+        from spriter.commands.transform import RotateCommand
+
+        pixels = np.zeros((5, 3, 4), dtype=np.uint8)  # h=5, w=3
+        pixels[0, :] = (0, 0, 255, 255)  # top row blue
+        s = _sprite_with_pixels(pixels)
+        assert (s.width, s.height) == (3, 5)
+        cmd = RotateCommand(s, 0, 0, 90)
+        cmd.execute()
+        assert (s.width, s.height) == (5, 3)
+        result = _get_pixels(s)
+        assert result.shape == (3, 5, 4)
+        # Top row → right column after 90° CW.
+        assert np.all(result[:, 4] == [0, 0, 255, 255])
+
+    def test_rotate_90_non_square_undo_restores(self):
+        from spriter.commands.transform import RotateCommand
+
+        pixels = np.zeros((5, 3, 4), dtype=np.uint8)
+        pixels[0, 0] = (255, 0, 0, 255)
+        s = _sprite_with_pixels(pixels.copy())
+        cmd = RotateCommand(s, 0, 0, 90)
+        cmd.execute()
+        cmd.undo()
+        assert (s.width, s.height) == (3, 5)
+        assert np.array_equal(_get_pixels(s), pixels)
+
+    def test_rotate_90_rotates_all_cels(self):
+        from spriter.commands.transform import RotateCommand
+        from spriter.core.sprite import Sprite
+
+        s = Sprite(3, 5)  # w=3, h=5
+        s.add_layer("A")
+        s.add_layer("B")
+        s.add_frame()
+        s.add_frame()
+        for li in range(s.layer_count):
+            for fi in range(s.frame_count):
+                buf = np.zeros((5, 3, 4), dtype=np.uint8)
+                buf[0, 0] = (10 + li, 20 + fi, 30, 255)
+                s.set_cel_pixels(li, fi, buf)
+        cmd = RotateCommand(s, 0, 0, 90)
+        cmd.execute()
+        assert (s.width, s.height) == (5, 3)
+        for li in range(s.layer_count):
+            for fi in range(s.frame_count):
+                assert s.get_cel(li, fi).pixels.shape == (3, 5, 4)
 
     def test_description(self):
         from spriter.commands.transform import RotateCommand
@@ -617,6 +664,7 @@ class TestMainWindowTransforms:
         win._unsaved = False
         win.close()
 
+
 # ---------------------------------------------------------------------------
 # InvertColorsCommand
 # ---------------------------------------------------------------------------
@@ -752,7 +800,6 @@ class TestReplaceColorUI:
 
     def test_replace_color_all_scope_composite(self, qapp, monkeypatch):
         from spriter.ui import main_window as mw
-        from spriter.commands.base import CompositeCommand
 
         win = mw.MainWindow()
         win.new_project(4, 4)

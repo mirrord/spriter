@@ -10,8 +10,6 @@ by ``(layer_index, frame_index)`` pairs.
 
 from __future__ import annotations
 
-from typing import dict, list, tuple
-
 import numpy as np
 
 from .animation import Animation

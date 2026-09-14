@@ -13,7 +13,6 @@ Features tested:
 
 from __future__ import annotations
 
-from typing import list, tuple
 from unittest.mock import MagicMock, patch
 
 # ---------------------------------------------------------------------------

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Sequence, list
+from typing import Sequence
 
 
 class Command(ABC):

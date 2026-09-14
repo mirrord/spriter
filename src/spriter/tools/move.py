@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import numpy as np
 
 from .base import Tool
@@ -27,11 +25,11 @@ class MoveTool(Tool):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._start: Optional[Tuple[int, int]] = None
-        self._floating: Optional[np.ndarray] = None  # pixels being moved
-        self._background: Optional[np.ndarray] = None  # layer minus floating pixels
-        self._selection_before: Optional[np.ndarray] = None  # original selection
-        self._move_mask: Optional[np.ndarray] = None  # mask of moved pixels
+        self._start: tuple[int, int] | None = None
+        self._floating: np.ndarray | None = None  # pixels being moved
+        self._background: np.ndarray | None = None  # layer minus floating pixels
+        self._selection_before: np.ndarray | None = None  # original selection
+        self._move_mask: np.ndarray | None = None  # mask of moved pixels
 
     def on_press(self, x: int, y: int) -> None:
         self._begin_stroke()
@@ -89,7 +87,7 @@ class MoveTool(Tool):
         _paste_offset(self._working, self._floating, dx, dy)
         # Restore the original selection so the command records a correct
         # before-state; the composite will set the shifted mask on execute.
-        shifted_selection: Optional[np.ndarray] = None
+        shifted_selection: np.ndarray | None = None
         if self._selection_before is not None:
             shifted_selection = _shift_mask(self._selection_before, dx, dy)
             self._sprite.selection_mask = self._selection_before.copy()
@@ -106,7 +104,7 @@ class MoveTool(Tool):
     def _direct_commit(
         self,
         description: str,
-        shifted_selection: Optional[np.ndarray] = None,
+        shifted_selection: np.ndarray | None = None,
     ) -> None:
         """Push a DrawCelCommand without applying selection-mask filtering.
 

@@ -4,7 +4,7 @@
 """Layers panel — list view with thumbnails, visibility, lock, opacity, and
 blend mode controls.
 
-:class:`LayersPanel` wraps a :class:`~PyQt6.QtWidgets.QListWidget` that shows
+:class:`LayersPanel` wraps a :class:`~PyQt6.QtWidgets.QlistWidget` that shows
 one row per layer (top → bottom).  Drag-to-reorder is handled via Qt's
 built-in internal-move drag-drop, with a :class:`~spriter.commands.layer_ops.MoveLayerCommand`
 pushed on drop so the action is undoable.
@@ -21,8 +21,6 @@ Below the list: opacity QSlider, blend mode QComboBox, and Add / Delete
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPixmap
@@ -32,8 +30,8 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
-    QListWidget,
-    QListWidgetItem,
+    QlistWidget,
+    QlistWidgetItem,
     QMenu,
     QMessageBox,
     QPushButton,
@@ -73,8 +71,8 @@ _EYE_X_START = _THUMB_SIZE + 6
 _EYE_X_END = _THUMB_SIZE + 32
 
 
-class _LayerList(QListWidget):
-    """QListWidget subclass that intercepts clicks on the eye-icon column."""
+class _Layerlist(QlistWidget):
+    """QlistWidget subclass that intercepts clicks on the eye-icon column."""
 
     def mousePressEvent(self, event) -> None:  # type: ignore[override]
         if event.button() == Qt.MouseButton.LeftButton:
@@ -167,7 +165,7 @@ class LayersPanel(QWidget):
         self,
         sprite: Sprite,
         stack: CommandStack,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sprite = sprite
@@ -180,7 +178,7 @@ class LayersPanel(QWidget):
         root.setSpacing(4)
 
         # ── Layer list ────────────────────────────────────────────────
-        self._list = _LayerList(self)
+        self._list = _Layerlist(self)
         self._list.setIconSize(QSize(_THUMB_SIZE, _THUMB_SIZE))
         self._list.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self._list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
@@ -263,9 +261,11 @@ class LayersPanel(QWidget):
             role_tag = (
                 " [FG]"
                 if layer.role == LayerRole.FOREGROUND
-                else " [BG]" if layer.role == LayerRole.BACKGROUND else ""
+                else " [BG]"
+                if layer.role == LayerRole.BACKGROUND
+                else ""
             )
-            item = QListWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
+            item = QlistWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
             item.setData(Qt.ItemDataRole.UserRole, li)  # store actual layer index
             self._list.addItem(item)
 
@@ -355,7 +355,7 @@ class LayersPanel(QWidget):
         self.layers_modified.emit()
 
     # ------------------------------------------------------------------
-    # List interactions
+    # list interactions
     # ------------------------------------------------------------------
 
     def _on_row_changed(self, row: int) -> None:

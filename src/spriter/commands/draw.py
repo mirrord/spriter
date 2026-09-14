@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 from ..commands.base import Command
@@ -48,7 +46,7 @@ class DrawCelCommand(Command):
         # Crop to the bbox of changed pixels to keep undo memory bounded.
         if before.shape != after.shape:
             # Shape mismatch (e.g. canvas resize) — fall back to full snapshots.
-            self._bbox: Optional[tuple] = None
+            self._bbox: tuple | None = None
             self._before = before.copy()
             self._after = after.copy()
             return
@@ -110,8 +108,8 @@ class SetSelectionCommand(Command):
     def __init__(
         self,
         sprite: Sprite,
-        before_mask: Optional[np.ndarray],
-        after_mask: Optional[np.ndarray],
+        before_mask: np.ndarray | None,
+        after_mask: np.ndarray | None,
     ) -> None:
         self._sprite = sprite
         self._before = before_mask.copy() if before_mask is not None else None

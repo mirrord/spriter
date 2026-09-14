@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 from ..utils.geometry import line_points
 from .base import Tool
 
@@ -21,7 +19,7 @@ class EraserTool(Tool):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._last: Optional[Tuple[int, int]] = None
+        self._last: tuple[int, int] | None = None
 
     def on_press(self, x: int, y: int) -> None:
         w = self._begin_stroke()

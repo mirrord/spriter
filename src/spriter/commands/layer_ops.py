@@ -18,7 +18,7 @@ Commands
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import dict
 
 import numpy as np
 
@@ -26,7 +26,6 @@ from ..commands.base import Command
 from ..core.frame import Cel
 from ..core.layer import BlendMode, Layer
 from ..core.sprite import Sprite
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -45,8 +44,8 @@ def _copy_cel(cel: Cel) -> Cel:
 def _shift_cel_layers_up(
     sprite: Sprite,
     from_index: int,
-    extra_cels: Optional[Dict[int, Cel]] = None,
-    extra_index: Optional[int] = None,
+    extra_cels: dict[int, Cel] | None = None,
+    extra_index: int | None = None,
 ) -> None:
     """Shift all layer indices >= *from_index* up by one in ``_cels``.
 
@@ -97,7 +96,7 @@ class AddLayerCommand(Command):
         sprite: Sprite,
         name: str = "Layer",
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
         visible: bool = True,
         locked: bool = False,
         opacity: int = 255,
@@ -110,7 +109,7 @@ class AddLayerCommand(Command):
         self._locked = locked
         self._opacity = opacity
         self._blend_mode = blend_mode
-        self._actual_index: Optional[int] = None
+        self._actual_index: int | None = None
 
     @property
     def description(self) -> str:
@@ -150,7 +149,7 @@ class RemoveLayerCommand(Command):
         self._index = layer_index
         # Snapshot the layer object and its cels before execution.
         self._layer: Layer = sprite._layers[layer_index]  # type: ignore[attr-defined]
-        self._cels: Dict[int, Cel] = {
+        self._cels: dict[int, Cel] = {
             fi: _copy_cel(cel)
             for fi in range(sprite.frame_count)
             if (cel := sprite._cels.get((layer_index, fi))) is not None  # type: ignore[attr-defined]
@@ -278,12 +277,12 @@ class MergeLayerDownCommand(Command):
 
         # Snapshot both layers' cels before execution.
         self._top_layer: Layer = sprite._layers[layer_index]  # type: ignore[attr-defined]
-        self._top_cels: Dict[int, Cel] = {
+        self._top_cels: dict[int, Cel] = {
             fi: _copy_cel(cel)
             for fi in range(sprite.frame_count)
             if (cel := sprite._cels.get((layer_index, fi))) is not None  # type: ignore[attr-defined]
         }
-        self._bottom_cels_before: Dict[int, Cel] = {
+        self._bottom_cels_before: dict[int, Cel] = {
             fi: _copy_cel(cel)
             for fi in range(sprite.frame_count)
             if (cel := sprite._cels.get((layer_index - 1, fi))) is not None  # type: ignore[attr-defined]
@@ -380,7 +379,7 @@ class FlattenCommand(Command):
         self._sprite = sprite
         # Snapshot all layers and cels for undo.
         self._saved_layers: list = list(sprite._layers)  # type: ignore[attr-defined]
-        self._saved_cels: Dict[tuple, Cel] = {
+        self._saved_cels: dict[tuple, Cel] = {
             key: _copy_cel(cel)
             for key, cel in sprite._cels.items()  # type: ignore[attr-defined]
         }
@@ -393,7 +392,7 @@ class FlattenCommand(Command):
         from ..core.compositor import composite_frame
 
         # Composite each frame into a merged cel.
-        merged: Dict[int, Cel] = {}
+        merged: dict[int, Cel] = {}
         for fi in range(self._sprite.frame_count):
             pixels = composite_frame(self._sprite, fi)
             merged[fi] = Cel(pixels)

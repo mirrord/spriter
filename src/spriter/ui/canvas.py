@@ -10,8 +10,6 @@ stroke the composited image cache is invalidated and the widget is repainted.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 import numpy as np
 from PyQt6.QtCore import QLine, QPointF, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
@@ -45,18 +43,18 @@ class CanvasWidget(QWidget):
         self,
         sprite: Sprite,
         stack: CommandStack,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sprite = sprite
         self._stack = stack
-        self._tool: Optional[Tool] = None
+        self._tool: Tool | None = None
 
         self._zoom: float = 1.0
         self._pan: QPointF = QPointF(0.0, 0.0)
 
         # Composite image cache — invalidated on any pixel edit.
-        self._composite_cache: Optional[np.ndarray] = None
+        self._composite_cache: np.ndarray | None = None
 
         # Pan state
         self._panning: bool = False
@@ -79,7 +77,7 @@ class CanvasWidget(QWidget):
         self.symmetry_v: bool = False  # mirror vertically   (top ↔ bottom)
 
         # Reference image overlay.
-        self.reference_image: Optional[np.ndarray] = None  # RGBA H×W×4
+        self.reference_image: np.ndarray | None = None  # RGBA H×W×4
         self.reference_opacity: float = 0.5
 
         # Tiling preview — renders the canvas in a 3×3 tile grid.
@@ -203,7 +201,7 @@ class CanvasWidget(QWidget):
             (self.height() - ch) / 2.0 + self._pan.y(),
         )
 
-    def _widget_to_canvas(self, wx: float, wy: float) -> Tuple[int, int]:
+    def _widget_to_canvas(self, wx: float, wy: float) -> tuple[int, int]:
         """Convert a widget-space point to canvas pixel coordinates."""
         offset = self._canvas_offset()
         cx = int((wx - offset.x()) / self._zoom)

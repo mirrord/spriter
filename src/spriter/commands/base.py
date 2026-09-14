@@ -29,7 +29,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from collections import deque
-from typing import Deque, List, Optional, Sequence
+from typing import Sequence, list
 
 
 class Command(ABC):
@@ -65,7 +65,7 @@ class CompositeCommand(Command):
         commands: Sequence[Command],
         description: str = "Compound action",
     ) -> None:
-        self._commands: List[Command] = list(commands)
+        self._commands: list[Command] = list(commands)
         self._description = description
 
     @property
@@ -103,8 +103,8 @@ class CommandStack:
         if max_depth < 1:
             raise ValueError(f"max_depth must be >= 1, got {max_depth}")
         self._max_depth = max_depth
-        self._undo_stack: Deque[Command] = deque()
-        self._redo_stack: Deque[Command] = deque()
+        self._undo_stack: deque[Command] = deque()
+        self._redo_stack: deque[Command] = deque()
 
     # ------------------------------------------------------------------
     # Properties
@@ -125,14 +125,14 @@ class CommandStack:
         return bool(self._redo_stack)
 
     @property
-    def undo_description(self) -> Optional[str]:
+    def undo_description(self) -> str | None:
         """Description label of the next undo action, or None."""
         if self._undo_stack:
             return self._undo_stack[-1].description
         return None
 
     @property
-    def redo_description(self) -> Optional[str]:
+    def redo_description(self) -> str | None:
         """Description label of the next redo action, or None."""
         if self._redo_stack:
             return self._redo_stack[-1].description
@@ -159,7 +159,7 @@ class CommandStack:
         if len(self._undo_stack) > self._max_depth:
             self._undo_stack.popleft()
 
-    def undo(self) -> Optional[Command]:
+    def undo(self) -> Command | None:
         """Undo the most recent command.
 
         Returns:
@@ -172,7 +172,7 @@ class CommandStack:
         self._redo_stack.append(command)
         return command
 
-    def redo(self) -> Optional[Command]:
+    def redo(self) -> Command | None:
         """Re-apply the most recently undone command.
 
         Returns:

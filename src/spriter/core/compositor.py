@@ -18,7 +18,7 @@ Supported blend modes (matching :class:`~spriter.core.layer.BlendMode`):
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Optional, Tuple
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -32,10 +32,10 @@ from .layer import BlendMode
 # the multi-megabyte allocations that dominate runtime for big canvases.
 # ---------------------------------------------------------------------------
 
-_BUFFER_POOL: dict[Tuple[int, int, int], list[np.ndarray]] = {}
+_BUFFER_POOL: dict[tuple[int, int, int], list[np.ndarray]] = {}
 
 
-def _take_buffer(shape: Tuple[int, ...], dtype: np.dtype) -> np.ndarray:
+def _take_buffer(shape: tuple[int, ...], dtype: np.dtype) -> np.ndarray:
     key = (
         (shape, dtype.str)
         if False
@@ -58,10 +58,10 @@ def _return_buffer(buf: np.ndarray) -> None:
 
 
 def composite_frame(
-    sprite: "Sprite",
+    sprite: Sprite,
     frame_index: int,
     *,
-    layer_range: Optional[Tuple[int, int]] = None,
+    layer_range: tuple[int, int] | None = None,
 ) -> np.ndarray:
     """Composite visible layers for *frame_index* into a single RGBA image.
 
@@ -92,7 +92,7 @@ def composite_frame(
         stop = min(len(layers), stop)
 
     # Collect the visible cels in the requested range.
-    visible: list[tuple[int, "object"]] = []  # (layer_idx, layer)
+    visible: list[tuple[int, object]] = []  # (layer_idx, layer)
     for layer_idx in range(start, stop):
         layer = layers[layer_idx]
         if not layer.visible:

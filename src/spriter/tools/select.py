@@ -5,13 +5,9 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 import numpy as np
 
-from ..commands.base import CommandStack
 from ..commands.draw import SetSelectionCommand
-from ..core.sprite import Sprite
 from ..utils.geometry import flood_fill_mask, polygon_mask
 from .base import Tool
 
@@ -25,9 +21,9 @@ class RectSelectTool(Tool):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._start: Optional[Tuple[int, int]] = None
-        self._current: Optional[Tuple[int, int]] = None
-        self._before_mask: Optional[np.ndarray] = None
+        self._start: tuple[int, int] | None = None
+        self._current: tuple[int, int] | None = None
+        self._before_mask: np.ndarray | None = None
 
     def on_press(self, x: int, y: int) -> None:
         self._before_mask = (
@@ -57,7 +53,7 @@ class RectSelectTool(Tool):
         self._start = None
         self._current = None
 
-    def selection_preview_rect(self) -> Optional[Tuple[int, int, int, int]]:
+    def selection_preview_rect(self) -> tuple[int, int, int, int] | None:
         """Return the live drag rectangle as ``(x0, y0, x1, y1)`` (normalised)."""
         if self._start is None or self._current is None:
             return None
@@ -88,8 +84,8 @@ class LassoTool(Tool):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._points: List[Tuple[int, int]] = []
-        self._before_mask: Optional[np.ndarray] = None
+        self._points: list[tuple[int, int]] = []
+        self._before_mask: np.ndarray | None = None
 
     def on_press(self, x: int, y: int) -> None:
         self._before_mask = (

@@ -20,7 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import dict, list, tuple
 
 
 def _config_path() -> Path:
@@ -47,15 +47,15 @@ class Settings:
 
     # ── Visual ───────────────────────────────────────────────────────
     # Grid overlay pen colour (R, G, B, A)
-    grid_color: Tuple[int, int, int, int] = (100, 100, 100, 140)
+    grid_color: tuple[int, int, int, int] = (100, 100, 100, 140)
     # Transparency checker colours
-    checker_light: Tuple[int, int, int] = (200, 200, 200)
-    checker_dark: Tuple[int, int, int] = (150, 150, 150)
+    checker_light: tuple[int, int, int] = (200, 200, 200)
+    checker_dark: tuple[int, int, int] = (150, 150, 150)
     # "dark" or "light"
     theme: str = "dark"
 
     # ── Recent files ─────────────────────────────────────────────────
-    recent_files: List[str]
+    recent_files: list[str]
     max_recent_files: int = 10
 
     # ── Last-used directories for file dialogs ───────────────────────
@@ -67,9 +67,9 @@ class Settings:
 
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
-    keybindings: Dict[str, str]
+    keybindings: dict[str, str]
 
-    _DEFAULT_KEYBINDINGS: Dict[str, str] = {
+    _DEFAULT_KEYBINDINGS: dict[str, str] = {  # noqa: RUF012
         "pencil": "B",
         "eraser": "E",
         "line": "L",
@@ -92,11 +92,11 @@ class Settings:
         self.checker_light = (200, 200, 200)
         self.checker_dark = (150, 150, 150)
         self.theme = "dark"
-        self.recent_files: List[str] = []
+        self.recent_files: list[str] = []
         self.max_recent_files = 10
         self.last_open_directory: str = ""
         self.last_save_directory: str = ""
-        self.keybindings: Dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
+        self.keybindings: dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
     # Serialization
@@ -121,7 +121,7 @@ class Settings:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Settings":
+    def from_dict(cls, data: dict) -> Settings:
         """Deserialize a settings dict (unknown keys are ignored)."""
         s = cls()
         s.default_canvas_width = int(
@@ -161,7 +161,7 @@ class Settings:
             s.keybindings = {str(k): str(v) for k, v in kb.items()}
         return s
 
-    def save(self, path: Optional[Path] = None) -> None:
+    def save(self, path: Path | None = None) -> None:
         """Write settings to *path* (defaults to the standard config location).
 
         Args:
@@ -175,7 +175,7 @@ class Settings:
         )
 
     @classmethod
-    def load(cls, path: Optional[Path] = None) -> "Settings":
+    def load(cls, path: Path | None = None) -> Settings:
         """Load settings from *path* (defaults to the standard config location).
 
         Returns a default :class:`Settings` instance if the file does not exist

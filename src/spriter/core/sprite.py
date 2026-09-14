@@ -10,7 +10,7 @@ by ``(layer_index, frame_index)`` pairs.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+from typing import dict, list, tuple
 
 import numpy as np
 
@@ -21,7 +21,7 @@ from .layer import BlendMode, Layer
 # Color modes (extensible for future indexed-color support).
 ColorMode = str  # "RGBA" is the only mode for Phase 1
 
-CelKey = Tuple[int, int]  # (layer_index, frame_index)
+CelKey = tuple[int, int]  # (layer_index, frame_index)
 
 
 class Sprite:
@@ -47,10 +47,10 @@ class Sprite:
         self.width = width
         self.height = height
         self.color_mode = color_mode
-        self._layers: List[Layer] = []
-        self._frames: List[Frame] = []
-        self._cels: Dict[CelKey, Cel] = {}
-        self.selection_mask: Optional[np.ndarray] = None  # bool (H, W) or None
+        self._layers: list[Layer] = []
+        self._frames: list[Frame] = []
+        self._cels: dict[CelKey, Cel] = {}
+        self.selection_mask: np.ndarray | None = None  # bool (H, W) or None
         self.animation: Animation = Animation()
 
     # ------------------------------------------------------------------
@@ -58,12 +58,12 @@ class Sprite:
     # ------------------------------------------------------------------
 
     @property
-    def layers(self) -> List[Layer]:
+    def layers(self) -> list[Layer]:
         """Ordered list of layers (bottom to top)."""
         return list(self._layers)
 
     @property
-    def frames(self) -> List[Frame]:
+    def frames(self) -> list[Frame]:
         """Ordered list of animation frames."""
         return list(self._frames)
 
@@ -83,7 +83,7 @@ class Sprite:
         self,
         name: str = "Layer",
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
         visible: bool = True,
         locked: bool = False,
         opacity: int = 255,
@@ -131,7 +131,7 @@ class Sprite:
         self._validate_layer_index(index)
         layer = self._layers.pop(index)
         # Remove cels for the removed layer and re-index higher-layer cels.
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             if li == index:
                 continue
@@ -154,7 +154,7 @@ class Sprite:
         layer = self._layers.pop(from_index)
         self._layers.insert(to_index, layer)
         # Rebuild cel keys to reflect new order.
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             new_li = _reindex(li, from_index, to_index)
             new_cels[(new_li, fi)] = cel
@@ -168,7 +168,7 @@ class Sprite:
         self,
         duration_ms: int = 100,
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
     ) -> Frame:
         """Create a new frame and insert it into the timeline.
 
@@ -187,7 +187,7 @@ class Sprite:
         frame_idx = self._frames.index(frame)
         # Shift existing cels at frame_idx and beyond up by one to make room.
         if frame_idx < len(self._frames) - 1:
-            new_cels: Dict[CelKey, Cel] = {}
+            new_cels: dict[CelKey, Cel] = {}
             for (li, fi), cel in self._cels.items():
                 new_fi = fi if fi < frame_idx else fi + 1
                 new_cels[(li, new_fi)] = cel
@@ -208,7 +208,7 @@ class Sprite:
         """
         self._validate_frame_index(index)
         frame = self._frames.pop(index)
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             if fi == index:
                 continue
@@ -230,7 +230,7 @@ class Sprite:
             return
         frame_obj = self._frames.pop(from_index)
         self._frames.insert(to_index, frame_obj)
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             new_fi = _reindex(fi, from_index, to_index)
             new_cels[(li, new_fi)] = cel
@@ -400,7 +400,7 @@ class Sprite:
                 f"Canvas size must be positive, got {new_width}x{new_height}"
             )
         old_w, old_h = self.width, self.height
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for key, cel in self._cels.items():
             if cel.pixels is None:
                 new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
@@ -455,7 +455,7 @@ class Sprite:
             if method == "nearest"
             else _PILImage.Resampling.BILINEAR
         )
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for key, cel in self._cels.items():
             if cel.pixels is None:
                 new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)

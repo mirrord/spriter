@@ -17,12 +17,9 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import numpy as np
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -60,9 +57,6 @@ class TestEyedropperColorSampled:
         assert hasattr(w, "color_sampled")
 
     def test_eyedropper_emits_color_sampled(self, qapp):
-        from PyQt6.QtCore import QPoint, Qt
-        from PyQt6.QtGui import QMouseEvent
-        from PyQt6.QtWidgets import QApplication
 
         from spriter.tools.eyedropper import EyedropperTool
         from spriter.ui.canvas import CanvasWidget
@@ -97,7 +91,6 @@ class TestEyedropperColorSampled:
         assert sampled[0] == (200, 100, 50, 255)
 
     def test_on_color_sampled_updates_color_picker(self, qapp):
-        from spriter.ui.color_picker import ColorPicker
         from spriter.ui.main_window import MainWindow
 
         win = MainWindow()
@@ -284,7 +277,6 @@ class TestLayerRole:
         assert "[BG]" in item.text()
 
     def test_normal_role_no_tag(self, qapp):
-        from spriter.core.layer import LayerRole
         from spriter.ui.layers_panel import LayersPanel
 
         s = _make_sprite(layers=1)
@@ -516,7 +508,7 @@ class TestTimelineThumbnails:
 
 class TestTimelineDragReorder:
     def test_event_filter_installed_on_cells(self, qapp):
-        from spriter.ui.timeline import TimelinePanel, _FrameCell
+        from spriter.ui.timeline import TimelinePanel
 
         s = _make_sprite(frames=3)
         panel = TimelinePanel(s, _make_stack())
@@ -532,10 +524,10 @@ class TestTimelineDragReorder:
             )  # installEventFilter accepted without error
 
     def test_drag_reorder_moves_frame(self, qapp):
-        from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PyQt6.QtCore import QPoint, QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
-        from spriter.ui.timeline import TimelinePanel, _FrameCell
+        from spriter.ui.timeline import TimelinePanel
 
         s = _make_sprite(8, 8, frames=3)
         stack = _make_stack()
@@ -574,7 +566,7 @@ class TestTimelineDragReorder:
         assert panel._active_frame == 2
 
     def test_no_drag_under_threshold(self, qapp):
-        from PyQt6.QtCore import QEvent, QPoint, QPointF, Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.timeline import TimelinePanel

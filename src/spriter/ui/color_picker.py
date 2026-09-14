@@ -33,10 +33,9 @@ colour.  Emits :attr:`ColorPicker.foreground_changed` or
 from __future__ import annotations
 
 import re
-from typing import List, Optional, Tuple
 
 import numpy as np
-from PyQt6.QtCore import QPoint, QPointF, Qt, pyqtSignal
+from PyQt6.QtCore import QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QAction, QColor, QImage, QPainter, QPen
 from PyQt6.QtWidgets import (
     QFrame,
@@ -52,7 +51,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-Color = Tuple[int, int, int, int]  # RGBA 0-255
+Color = tuple[int, int, int, int]  # RGBA 0-255
 
 
 class _ColorSwatch(QWidget):
@@ -60,7 +59,7 @@ class _ColorSwatch(QWidget):
 
     clicked = pyqtSignal()
 
-    def __init__(self, color: Color, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, color: Color, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._color = QColor(*color)
         self.setFixedSize(36, 36)
@@ -101,12 +100,12 @@ class _HueStrip(QWidget):
     _W = 16
     _H = 150
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(self._W, self._H)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._hue: int = 0
-        self._gradient: Optional[QImage] = None
+        self._gradient: QImage | None = None
 
     def set_hue(self, h: int) -> None:
         self._hue = max(0, min(359, h))
@@ -240,15 +239,15 @@ class _SVSquare(QWidget):
 
     _SIZE = 150
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setFixedSize(self._SIZE, self._SIZE)
         self.setCursor(Qt.CursorShape.CrossCursor)
         self._hue: int = 0
         self._s: int = 255
         self._v: int = 255
-        self._cached_hue: Optional[int] = None
-        self._cached_img: Optional[QImage] = None
+        self._cached_hue: int | None = None
+        self._cached_img: QImage | None = None
 
     def set_hue(self, h: int) -> None:
         self._hue = max(0, min(359, h))
@@ -323,7 +322,7 @@ class _PaletteButton(QToolButton):
         self,
         index: int,
         color: Color,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.index = index
@@ -367,7 +366,7 @@ class ColorPicker(QWidget):
     foreground_changed = pyqtSignal(object)  # tuple (r, g, b, a)
     background_changed = pyqtSignal(object)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._fg_color = QColor(0, 0, 0, 255)
         self._bg_color = QColor(255, 255, 255, 255)
@@ -442,20 +441,20 @@ class ColorPicker(QWidget):
         palette_grid = QGridLayout(self._palette_frame)
         palette_grid.setSpacing(2)
         palette_grid.setContentsMargins(2, 2, 2, 2)
-        self._palette_buttons: List[_PaletteButton] = []
+        self._palette_buttons: list[_PaletteButton] = []
         self._palette_colors: list = [(r, g, b, 255) for r, g, b in _DEFAULT_PALETTE]
         self._rebuild_palette_grid(self._palette_colors)
         root.addWidget(self._palette_frame)
 
         # ── Recent colours row ───────────────────────────────────────
-        self._recent_colors: List[Color] = []
+        self._recent_colors: list[Color] = []
         recent_frame = QFrame()
         recent_frame.setFrameShape(QFrame.Shape.StyledPanel)
         recent_row = QHBoxLayout(recent_frame)
         recent_row.setContentsMargins(2, 2, 2, 2)
         recent_row.setSpacing(2)
         recent_row.addWidget(QLabel("Recent:"))
-        self._recent_buttons: List[QToolButton] = []
+        self._recent_buttons: list[QToolButton] = []
         for _ in range(16):
             btn = QToolButton()
             btn.setFixedSize(16, 16)
@@ -559,7 +558,7 @@ class ColorPicker(QWidget):
         """Replace the palette grid with the given colour list.
 
         Args:
-            colors: List of ``(R, G, B)`` or ``(R, G, B, A)`` tuples.
+            colors: list of ``(R, G, B)`` or ``(R, G, B, A)`` tuples.
         """
         self._palette_colors = [
             (c[0], c[1], c[2], c[3] if len(c) > 3 else 255) for c in colors

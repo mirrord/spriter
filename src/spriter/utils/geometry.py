@@ -13,12 +13,11 @@ from __future__ import annotations
 
 import math
 from collections import deque
-from typing import List, Optional, Sequence, Tuple
 
 import numpy as np
 
 # A color value is a 4-element sequence (R, G, B, A) with uint8 range 0–255.
-Color = Tuple[int, int, int, int]
+Color = tuple[int, int, int, int]
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +71,7 @@ def draw_line(
     x1: int,
     y1: int,
     color: Color,
-) -> List[Tuple[int, int]]:
+) -> list[tuple[int, int]]:
     """Draw a 1-pixel-wide line using Bresenham's algorithm.
 
     Args:
@@ -82,9 +81,9 @@ def draw_line(
         color: ``(R, G, B, A)`` fill color.
 
     Returns:
-        List of ``(x, y)`` pixel positions that were plotted.
+        list of ``(x, y)`` pixel positions that were plotted.
     """
-    plotted: List[Tuple[int, int]] = []
+    plotted: list[tuple[int, int]] = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
     sx = 1 if x0 < x1 else -1
@@ -106,7 +105,7 @@ def draw_line(
     return plotted
 
 
-def line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
+def line_points(x0: int, y0: int, x1: int, y1: int) -> list[tuple[int, int]]:
     """Return the pixel coordinates for a Bresenham line without drawing.
 
     Args:
@@ -116,7 +115,7 @@ def line_points(x0: int, y0: int, x1: int, y1: int) -> List[Tuple[int, int]]:
     Returns:
         Ordered list of ``(x, y)`` positions.
     """
-    pts: List[Tuple[int, int]] = []
+    pts: list[tuple[int, int]] = []
     dx = abs(x1 - x0)
     dy = abs(y1 - y0)
     sx = 1 if x0 < x1 else -1
@@ -294,7 +293,7 @@ def flood_fill(
         return 0
 
     count = 0
-    queue: deque[Tuple[int, int]] = deque()
+    queue: deque[tuple[int, int]] = deque()
     queue.append((x, y))
     visited = np.zeros((h, w), dtype=bool)
     visited[y, x] = True
@@ -489,7 +488,7 @@ def flood_fill_tolerance(
         ]
 
     count = 0
-    queue: deque[Tuple[int, int]] = deque()
+    queue: deque[tuple[int, int]] = deque()
     queue.append((x, y))
     visited = np.zeros((h, w), dtype=bool)
     visited[y, x] = True
@@ -562,7 +561,7 @@ def flood_fill_mask(
             (-1, -1),
         ]
 
-    queue: deque[Tuple[int, int]] = deque()
+    queue: deque[tuple[int, int]] = deque()
     queue.append((x, y))
     visited = np.zeros((h, w), dtype=bool)
     visited[y, x] = True
@@ -583,7 +582,7 @@ def flood_fill_mask(
 def polygon_mask(
     height: int,
     width: int,
-    vertices: List[Tuple[int, int]],
+    vertices: list[tuple[int, int]],
 ) -> np.ndarray:
     """Create a boolean mask of the interior of a polygon.
 

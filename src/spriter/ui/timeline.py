@@ -19,9 +19,7 @@ frame_duration_changed(int, int)
 from __future__ import annotations
 
 import numpy as np
-from typing import List, Optional
-
-from PyQt6.QtCore import Qt, QPoint, QEvent, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -31,7 +29,6 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
@@ -74,8 +71,8 @@ class _FrameCell(QWidget):
         frame_index: int,
         duration_ms: int,
         active: bool = False,
-        thumbnail: Optional[QPixmap] = None,
-        parent: Optional[QWidget] = None,
+        thumbnail: QPixmap | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.frame_index = frame_index
@@ -121,7 +118,6 @@ class _FrameCell(QWidget):
 
         # Frame number (top-left, small)
         painter.setPen(QColor(240, 240, 240))
-        from PyQt6.QtCore import QRect
         from PyQt6.QtGui import QFont
 
         small_font = QFont()
@@ -131,7 +127,6 @@ class _FrameCell(QWidget):
 
         # Duration (ms) — bottom strip
         painter.setPen(QColor(180, 180, 180))
-        from PyQt6.QtCore import QRect
 
         bot_rect = self.rect().adjusted(0, self._CELL_H - 14, 0, 0)
         painter.drawText(
@@ -178,19 +173,19 @@ class TimelinePanel(QWidget):
         self,
         sprite: Sprite,
         stack: CommandStack,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sprite = sprite
         self._stack = stack
         self._active_frame: int = 0
-        self._cells: List[_FrameCell] = []
+        self._cells: list[_FrameCell] = []
 
         # Drag-to-reorder state
-        self._drag_source: Optional[int] = None  # frame index being dragged
-        self._drag_start_pos: Optional[QPoint] = None
+        self._drag_source: int | None = None  # frame index being dragged
+        self._drag_start_pos: QPoint | None = None
         self._dragging: bool = False
-        self._drag_indicator: Optional[int] = None  # insert-before index
+        self._drag_indicator: int | None = None  # insert-before index
 
         self._build_ui()
         self.refresh()
@@ -386,7 +381,7 @@ class TimelinePanel(QWidget):
     # Thumbnail helper
     # ------------------------------------------------------------------
 
-    def _make_thumbnail(self, frame_index: int) -> Optional[QPixmap]:
+    def _make_thumbnail(self, frame_index: int) -> QPixmap | None:
         """Composite *frame_index* and return a small QPixmap thumbnail."""
         if (
             self._sprite.frame_count == 0
@@ -486,7 +481,7 @@ class TimelinePanel(QWidget):
 
         return False
 
-    def _frame_index_at(self, strip_local: QPoint) -> Optional[int]:
+    def _frame_index_at(self, strip_local: QPoint) -> int | None:
         """Return the frame index of the cell under *strip_local* (strip widget coords)."""
         child = self._strip_widget.childAt(strip_local)
         if isinstance(child, _FrameCell):

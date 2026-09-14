@@ -5,8 +5,6 @@
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
-
 from ..utils.geometry import draw_rect, draw_rounded_rect
 from .base import Tool
 
@@ -24,7 +22,7 @@ class RectangleTool(Tool):
         super().__init__(*args, **kwargs)
         self.filled: bool = False
         self.corner_radius: int = 0
-        self._start: Optional[Tuple[int, int]] = None
+        self._start: tuple[int, int] | None = None
 
     def on_press(self, x: int, y: int) -> None:
         self._begin_stroke()

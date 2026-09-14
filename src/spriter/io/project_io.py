@@ -33,7 +33,7 @@ import base64
 import io
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import numpy as np
 from PIL import Image
@@ -45,7 +45,7 @@ from ..core.sprite import Sprite
 _FORMAT_VERSION = 1
 
 
-def save(sprite: Sprite, path: Union[str, Path]) -> None:
+def save(sprite: Sprite, path: str | Path) -> None:
     """Save *sprite* as a ``.spriter`` project file.
 
     The file is first written to a temporary ``~``-suffixed path so that any
@@ -70,7 +70,7 @@ def save(sprite: Sprite, path: Union[str, Path]) -> None:
         raise
 
 
-def load(path: Union[str, Path]) -> Sprite:
+def load(path: str | Path) -> Sprite:
     """Load a ``.spriter`` project file and return a :class:`~spriter.core.sprite.Sprite`.
 
     Args:
@@ -88,7 +88,7 @@ def load(path: Union[str, Path]) -> Sprite:
     return _dict_to_sprite(data)
 
 
-def autosave(sprite: Sprite, path: Union[str, Path]) -> Path:
+def autosave(sprite: Sprite, path: str | Path) -> Path:
     """Write a recovery copy of *sprite* next to *path*.
 
     The autosave file is named ``<stem>.spriter~``.  Calling :func:`save`
@@ -116,11 +116,11 @@ def autosave(sprite: Sprite, path: Union[str, Path]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _sprite_to_dict(sprite: Sprite) -> Dict[str, Any]:
+def _sprite_to_dict(sprite: Sprite) -> dict[str, Any]:
     layers_data = [_layer_to_dict(layer) for layer in sprite.layers]
     frames_data = [_frame_to_dict(frame) for frame in sprite.frames]
 
-    cels_data: Dict[str, str] = {}
+    cels_data: dict[str, str] = {}
     for li in range(sprite.layer_count):
         for fi in range(sprite.frame_count):
             cel = sprite._cels.get((li, fi))
@@ -144,7 +144,7 @@ def _sprite_to_dict(sprite: Sprite) -> Dict[str, Any]:
     }
 
 
-def _dict_to_sprite(data: Dict[str, Any]) -> Sprite:
+def _dict_to_sprite(data: dict[str, Any]) -> Sprite:
     version = int(data.get("version", 1))
     if version != _FORMAT_VERSION:
         raise ValueError(
@@ -185,7 +185,7 @@ def _dict_to_sprite(data: Dict[str, Any]) -> Sprite:
     return sprite
 
 
-def _layer_to_dict(layer: Layer) -> Dict[str, Any]:
+def _layer_to_dict(layer: Layer) -> dict[str, Any]:
     return {
         "name": layer.name,
         "visible": layer.visible,
@@ -195,7 +195,7 @@ def _layer_to_dict(layer: Layer) -> Dict[str, Any]:
     }
 
 
-def _frame_to_dict(frame: Frame) -> Dict[str, Any]:
+def _frame_to_dict(frame: Frame) -> dict[str, Any]:
     return {"duration_ms": frame.duration_ms}
 
 

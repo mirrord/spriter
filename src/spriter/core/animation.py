@@ -11,7 +11,7 @@ how the frame sequence is played back.
 from __future__ import annotations
 
 from enum import Enum
-from typing import TYPE_CHECKING, List, Tuple
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .sprite import Sprite
@@ -41,7 +41,7 @@ class AnimationTag:
         name: str,
         from_frame: int,
         to_frame: int,
-        color: Tuple[int, int, int] = (255, 0, 0),
+        color: tuple[int, int, int] = (255, 0, 0),
         loop_mode: LoopMode = LoopMode.LOOP,
     ) -> None:
         if from_frame < 0:
@@ -85,14 +85,14 @@ class Animation:
             raise ValueError(f"default_fps must be positive, got {default_fps!r}")
         self.default_fps = default_fps
         self.loop_mode = loop_mode
-        self._tags: List[AnimationTag] = []
+        self._tags: list[AnimationTag] = []
 
     # ------------------------------------------------------------------
     # Tag management
     # ------------------------------------------------------------------
 
     @property
-    def tags(self) -> List[AnimationTag]:
+    def tags(self) -> list[AnimationTag]:
         """Ordered list of animation tags (copy)."""
         return list(self._tags)
 
@@ -101,7 +101,7 @@ class Animation:
         name: str,
         from_frame: int,
         to_frame: int,
-        color: Tuple[int, int, int] = (255, 0, 0),
+        color: tuple[int, int, int] = (255, 0, 0),
         loop_mode: LoopMode = LoopMode.LOOP,
     ) -> AnimationTag:
         """Create and register a new animation tag.
@@ -139,7 +139,7 @@ class Animation:
     # Playback helpers
     # ------------------------------------------------------------------
 
-    def get_frame_duration_ms(self, sprite: "Sprite", frame_index: int) -> int:
+    def get_frame_duration_ms(self, sprite: Sprite, frame_index: int) -> int:
         """Return the display duration in milliseconds for a given frame.
 
         Uses ``sprite.frames[frame_index].duration_ms`` when the frame exists;

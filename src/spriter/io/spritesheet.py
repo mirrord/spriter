@@ -21,7 +21,7 @@ import json
 from collections import Counter
 from enum import Enum
 from pathlib import Path
-from typing import Dict, List, NamedTuple, Optional, Tuple, Union
+from typing import Namedtuple
 
 import numpy as np
 from PIL import Image
@@ -38,7 +38,7 @@ class SheetLayout(Enum):
     GRID = "grid"
 
 
-def _get_frame_images(sprite: Sprite) -> List[np.ndarray]:
+def _get_frame_images(sprite: Sprite) -> list[np.ndarray]:
     """Return composited RGBA arrays for every frame."""
     return [composite_frame(sprite, fi) for fi in range(sprite.frame_count)]
 
@@ -50,7 +50,7 @@ def _sheet_dimensions(
     layout: SheetLayout,
     cols: int,
     padding: int,
-) -> Tuple[int, int, int, int]:
+) -> tuple[int, int, int, int]:
     """Return ``(sheet_w, sheet_h, actual_cols, actual_rows)`` for a layout."""
     if layout == SheetLayout.HORIZONTAL:
         actual_cols = n_frames
@@ -69,7 +69,7 @@ def _sheet_dimensions(
 
 def export_sheet(
     sprite: Sprite,
-    path: Union[str, Path],
+    path: str | Path,
     *,
     layout: SheetLayout = SheetLayout.HORIZONTAL,
     cols: int = 0,
@@ -110,13 +110,13 @@ def export_sheet(
 
 def export_atlas(
     sprite: Sprite,
-    sheet_path: Union[str, Path],
-    atlas_path: Union[str, Path],
+    sheet_path: str | Path,
+    atlas_path: str | Path,
     *,
     layout: SheetLayout = SheetLayout.HORIZONTAL,
     cols: int = 0,
     padding: int = 0,
-) -> Dict:
+) -> dict:
     """Export a sprite sheet and an accompanying JSON atlas.
 
     The JSON atlas format is compatible with common texture-packer tools::
@@ -157,7 +157,7 @@ def export_atlas(
     )
 
     # Build atlas before exporting so we can return it.
-    atlas: Dict = {
+    atlas: dict = {
         "meta": {
             "image": sheet_path.name,
             "size": {"w": sheet_w, "h": sheet_h},
@@ -185,7 +185,7 @@ def export_atlas(
 
 
 def import_sheet(
-    path: Union[str, Path],
+    path: str | Path,
     frame_width: int,
     frame_height: int,
     *,
@@ -247,7 +247,7 @@ def import_sheet(
 # ---------------------------------------------------------------------------
 
 
-class EstimatedLayout(NamedTuple):
+class EstimatedLayout(Namedtuple):
     """Estimated frame dimensions for a sprite sheet.
 
     Attributes:
@@ -263,7 +263,7 @@ class EstimatedLayout(NamedTuple):
 
 # Common pixel-art frame sizes, used as a fallback when the sheet has no
 # detectable inter-sprite separation (uniform alpha + uniform colour).
-_PREFERRED_SIZES: Tuple[int, ...] = (8, 16, 24, 32, 48, 64, 96, 128)
+_PREFERRED_SIZES: tuple[int, ...] = (8, 16, 24, 32, 48, 64, 96, 128)
 
 
 def _largest_preferred_divisor(extent: int) -> int:
@@ -280,7 +280,7 @@ def _largest_preferred_divisor(extent: int) -> int:
     return extent
 
 
-def _period_from_mask(has_content: np.ndarray) -> Optional[int]:
+def _period_from_mask(has_content: np.ndarray) -> int | None:
     """Estimate the frame stride along an axis from a boolean content mask.
 
     Returns the per-frame *stride* (i.e. frame size **including** any
@@ -317,7 +317,7 @@ def _period_from_mask(has_content: np.ndarray) -> Optional[int]:
 
 
 def estimate_sheet_layout(
-    source: Union[str, Path, np.ndarray, Image.Image],
+    source: str | Path | np.ndarray | Image.Image,
 ) -> EstimatedLayout:
     """Estimate per-frame dimensions for a sprite sheet.
 

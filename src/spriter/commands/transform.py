@@ -25,19 +25,18 @@ Commands
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
+from typing import dict, tuple
 
 import numpy as np
 
 from ..commands.base import Command
-from ..core.frame import Cel
 from ..core.sprite import Sprite
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-CelKey = Tuple[int, int]
+CelKey = tuple[int, int]
 
 
 def _get_pixels(sprite: Sprite, li: int, fi: int) -> np.ndarray:
@@ -52,9 +51,9 @@ def _set_pixels(sprite: Sprite, li: int, fi: int, pixels: np.ndarray) -> None:
     sprite.set_cel_pixels(li, fi, pixels)
 
 
-def _save_all_cels(sprite: Sprite) -> Dict[CelKey, np.ndarray]:
+def _save_all_cels(sprite: Sprite) -> dict[CelKey, np.ndarray]:
     """Snapshot every cel's pixel buffer (for whole-sprite transforms)."""
-    saved: Dict[CelKey, np.ndarray] = {}
+    saved: dict[CelKey, np.ndarray] = {}
     for li in range(sprite.layer_count):
         for fi in range(sprite.frame_count):
             pixels = _get_pixels(sprite, li, fi)
@@ -64,7 +63,7 @@ def _save_all_cels(sprite: Sprite) -> Dict[CelKey, np.ndarray]:
 
 def _restore_all_cels(
     sprite: Sprite,
-    saved: Dict[CelKey, np.ndarray],
+    saved: dict[CelKey, np.ndarray],
 ) -> None:
     for (li, fi), pixels in saved.items():
         sprite.set_cel_pixels(li, fi, pixels)
@@ -100,7 +99,7 @@ class FlipCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._horizontal = horizontal
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -163,7 +162,7 @@ class RotateCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._angle = angle
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -225,7 +224,7 @@ class ShiftCommand(Command):
         self._fi = frame_index
         self._dx = dx
         self._dy = dy
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -266,13 +265,13 @@ class OutlineCommand(Command):
         sprite: Sprite,
         layer_index: int,
         frame_index: int,
-        outline_color: Tuple[int, int, int, int] = (0, 0, 0, 255),
+        outline_color: tuple[int, int, int, int] = (0, 0, 0, 255),
     ) -> None:
         self._sprite = sprite
         self._li = layer_index
         self._fi = frame_index
         self._color = outline_color
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -322,8 +321,8 @@ class ReplaceColorCommand(Command):
         sprite: Sprite,
         layer_index: int,
         frame_index: int,
-        old_color: Tuple[int, int, int, int],
-        new_color: Tuple[int, int, int, int],
+        old_color: tuple[int, int, int, int],
+        new_color: tuple[int, int, int, int],
         tolerance: float = 0.0,
     ) -> None:
         self._sprite = sprite
@@ -332,7 +331,7 @@ class ReplaceColorCommand(Command):
         self._old_color = old_color
         self._new_color = new_color
         self._tolerance = tolerance
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -391,7 +390,7 @@ class InvertColorsCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._respect_selection = respect_selection
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -457,7 +456,7 @@ class AdjustmentCommand(Command):
         self._contrast = contrast
         self._hue = hue
         self._saturation = saturation
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -542,9 +541,9 @@ class CanvasResizeCommand(Command):
         self._new_height = new_height
         self._offset_x = offset_x
         self._offset_y = offset_y
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:
@@ -606,10 +605,10 @@ class CropToSelectionCommand(Command):
         self._w = int(x_idx[-1] - x_idx[0] + 1)
         self._h = int(y_idx[-1] - y_idx[0] + 1)
         self._sprite = sprite
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
-        self._saved_mask: Optional[np.ndarray] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -685,10 +684,10 @@ class AutocropCommand(Command):
         self._y0 = y0
         self._w = new_w
         self._h = new_h
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
-        self._saved_mask: Optional[np.ndarray] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -740,9 +739,9 @@ class ScaleCommand(Command):
         self._new_width = new_width
         self._new_height = new_height
         self._method = method
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:
@@ -813,8 +812,8 @@ class ScaleSelectionCommand(Command):
         self._new_w = int(new_width)
         self._new_h = int(new_height)
         self._method = method
-        self._old_pixels: Optional[np.ndarray] = None
-        self._old_mask: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
+        self._old_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:

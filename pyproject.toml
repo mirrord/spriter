@@ -56,7 +56,7 @@ extra-dependencies = [
 ]
 [tool.hatch.envs.dist.scripts]
 build = "pyinstaller spriter.spec --noconfirm"
-build-onefile = "pyinstaller spriter.spec --noconfirm --onefile"
+build-onefile = "python -c \"import os; os.environ['SPRITER_ONEFILE'] = '1'; import PyInstaller.__main__; PyInstaller.__main__.run(['spriter.spec', '--noconfirm'])\""
 
 [tool.coverage.run]
 source_pkgs = ["spriter", "tests"]

@@ -42,6 +42,8 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from spriter.__about__ import __version__
+
 from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -1174,7 +1176,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Spriter",
-            "Spriter \u2014 Pixel art editor\n\nPhases 1-8 implemented.",
+            "Spriter \u2014 Pixel art editor\n\nVersion " + __version__,
         )
 
     # ------------------------------------------------------------------

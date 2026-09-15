@@ -36,6 +36,9 @@ from ..core.sprite import Sprite
 
 CelKey = tuple[int, int]
 
+# Whole-document cel snapshot key: (timeline_index, layer_index, frame_index).
+CelSnapshotKey = tuple[int, int, int]
+
 
 def _get_pixels(sprite: Sprite, li: int, fi: int) -> np.ndarray:
     """Return a copy of the pixel buffer for the given cel (never None)."""
@@ -49,22 +52,33 @@ def _set_pixels(sprite: Sprite, li: int, fi: int, pixels: np.ndarray) -> None:
     sprite.set_cel_pixels(li, fi, pixels)
 
 
-def _save_all_cels(sprite: Sprite) -> dict[CelKey, np.ndarray]:
-    """Snapshot every cel's pixel buffer (for whole-sprite transforms)."""
-    saved: dict[CelKey, np.ndarray] = {}
-    for li in range(sprite.layer_count):
-        for fi in range(sprite.frame_count):
-            pixels = _get_pixels(sprite, li, fi)
-            saved[(li, fi)] = pixels
+def _save_all_cels(sprite: Sprite) -> dict[CelSnapshotKey, np.ndarray]:
+    """Snapshot every cel's pixel buffer across all timelines.
+
+    Keys are ``(timeline_index, layer_index, frame_index)`` so whole-document
+    transforms (rotate, resize, scale, crop) can be undone across every
+    animation, not just the active one.
+    """
+    saved: dict[CelSnapshotKey, np.ndarray] = {}
+    active = sprite.active_timeline_index
+    for ti in range(sprite.timeline_count):
+        sprite.set_active_timeline(ti)
+        for li in range(sprite.layer_count):
+            for fi in range(sprite.frame_count):
+                saved[(ti, li, fi)] = _get_pixels(sprite, li, fi)
+    sprite.set_active_timeline(active)
     return saved
 
 
 def _restore_all_cels(
     sprite: Sprite,
-    saved: dict[CelKey, np.ndarray],
+    saved: dict[CelSnapshotKey, np.ndarray],
 ) -> None:
-    for (li, fi), pixels in saved.items():
+    active = sprite.active_timeline_index
+    for (ti, li, fi), pixels in saved.items():
+        sprite.set_active_timeline(ti)
         sprite.set_cel_pixels(li, fi, pixels)
+    sprite.set_active_timeline(active)
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +178,7 @@ class RotateCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._angle = angle
-        self._old_cels: dict[CelKey, np.ndarray] | None = None
+        self._old_cels: dict[CelSnapshotKey, np.ndarray] | None = None
         self._old_size: tuple[int, int] | None = None
 
     @property
@@ -174,6 +188,7 @@ class RotateCommand(Command):
     def execute(self) -> None:
         self._old_cels = _save_all_cels(self._sprite)
         self._old_size = (self._sprite.width, self._sprite.height)
+        active = self._sprite.active_timeline_index
         ang = self._angle % 360
         quarter = {90: 3, 180: 2, 270: 1}.get(ang)  # np.rot90 turns (CCW)
         if quarter is not None:
@@ -183,18 +198,21 @@ class RotateCommand(Command):
             if ang in (90, 270):
                 # Swap canvas dimensions before writing the transposed cels.
                 self._sprite.resize_canvas(self._old_size[1], self._old_size[0])
-            for (li, fi), px in rotated.items():
+            for (ti, li, fi), px in rotated.items():
+                self._sprite.set_active_timeline(ti)
                 self._sprite.set_cel_pixels(li, fi, px)
         else:
             from PIL import Image as _PILImage
 
-            for (li, fi), px in self._old_cels.items():
+            for (ti, li, fi), px in self._old_cels.items():
                 pil_img = _PILImage.fromarray(px, mode="RGBA").rotate(
                     -self._angle,  # PIL rotates counter-clockwise; negate for CW
                     resample=_PILImage.Resampling.NEAREST,
                     expand=False,
                 )
+                self._sprite.set_active_timeline(ti)
                 self._sprite.set_cel_pixels(li, fi, np.array(pil_img, dtype=np.uint8))
+        self._sprite.set_active_timeline(active)
 
     def undo(self) -> None:
         assert self._old_cels is not None and self._old_size is not None
@@ -551,7 +569,7 @@ class CanvasResizeCommand(Command):
         self._offset_y = offset_y
         self._old_width: int | None = None
         self._old_height: int | None = None
-        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:
@@ -615,7 +633,7 @@ class CropToSelectionCommand(Command):
         self._sprite = sprite
         self._old_width: int | None = None
         self._old_height: int | None = None
-        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
         self._saved_mask: np.ndarray | None = None
 
     @property
@@ -669,9 +687,9 @@ class AutocropCommand(Command):
     def __init__(self, sprite: Sprite) -> None:
         h, w = sprite.height, sprite.width
         any_opaque = np.zeros((h, w), dtype=bool)
-        for li in range(sprite.layer_count):
-            for fi in range(sprite.frame_count):
-                cel = sprite.get_cel(li, fi)
+        # Union of opaque pixels across every timeline (the canvas is shared).
+        for timeline in sprite.timelines:
+            for cel in timeline._cels.values():
                 if cel.pixels is None:
                     continue
                 any_opaque |= cel.pixels[..., 3] > 0
@@ -694,7 +712,7 @@ class AutocropCommand(Command):
         self._h = new_h
         self._old_width: int | None = None
         self._old_height: int | None = None
-        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
         self._saved_mask: np.ndarray | None = None
 
     @property
@@ -749,7 +767,7 @@ class ScaleCommand(Command):
         self._method = method
         self._old_width: int | None = None
         self._old_height: int | None = None
-        self._saved_cels: dict[CelKey, np.ndarray] | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:

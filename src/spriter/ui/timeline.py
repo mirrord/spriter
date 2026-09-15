@@ -33,6 +33,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from ..commands.animation_ops import (
+    AddTimelineCommand,
+    RemoveTimelineCommand,
+    RenameTimelineCommand,
+)
 from ..commands.base import CommandStack
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -168,6 +173,8 @@ class TimelinePanel(QWidget):
     frame_selected = pyqtSignal(int)
     #: Emitted when the user changes a frame's duration.
     frame_duration_changed = pyqtSignal(int, int)
+    #: Emitted when the active animation timeline changes; carries its index.
+    animation_changed = pyqtSignal(int)
 
     def __init__(
         self,
@@ -231,6 +238,60 @@ class TimelinePanel(QWidget):
             cell.installEventFilter(self)
             self._strip_layout.addWidget(cell)
             self._cells.append(cell)
+        self._update_animation_label()
+
+    # ------------------------------------------------------------------
+    # Animation (timeline) navigation
+    # ------------------------------------------------------------------
+
+    def _update_animation_label(self) -> None:
+        """Refresh the ``Anim i/N: name`` label from the sprite state."""
+        idx = self._sprite.active_timeline_index
+        total = self._sprite.timeline_count
+        name = self._sprite.timelines[idx].name
+        self._anim_label.setText(f"Anim {idx + 1}/{total}: {name}")
+
+    def _go_to_animation(self, index: int) -> None:
+        index = max(0, min(self._sprite.timeline_count - 1, index))
+        if index == self._sprite.active_timeline_index:
+            return
+        self._sprite.set_active_timeline(index)
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(index)
+
+    def _prev_animation(self) -> None:
+        self._go_to_animation(self._sprite.active_timeline_index - 1)
+
+    def _next_animation(self) -> None:
+        self._go_to_animation(self._sprite.active_timeline_index + 1)
+
+    def _add_animation(self) -> None:
+        self._stack.push(AddTimelineCommand(self._sprite))
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(self._sprite.active_timeline_index)
+
+    def _remove_animation(self) -> None:
+        if self._sprite.timeline_count <= 1:
+            QMessageBox.warning(self, "Spriter", "Cannot delete the last animation.")
+            return
+        self._stack.push(
+            RemoveTimelineCommand(self._sprite, self._sprite.active_timeline_index)
+        )
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(self._sprite.active_timeline_index)
+
+    def _rename_animation(self) -> None:
+        idx = self._sprite.active_timeline_index
+        current = self._sprite.timelines[idx].name
+        name, ok = QInputDialog.getText(
+            self, "Rename Animation", "Animation name:", text=current
+        )
+        if ok and name and name != current:
+            self._stack.push(RenameTimelineCommand(self._sprite, idx, name))
+            self._update_animation_label()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -240,6 +301,34 @@ class TimelinePanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(2)
+
+        # Animation (timeline) navigation bar.
+        anim_bar = QHBoxLayout()
+        anim_bar.setSpacing(4)
+        up_btn = QPushButton("\u25b2")
+        up_btn.setFixedSize(28, 22)
+        up_btn.setToolTip("Previous animation")
+        up_btn.clicked.connect(self._prev_animation)
+        down_btn = QPushButton("\u25bc")
+        down_btn.setFixedSize(28, 22)
+        down_btn.setToolTip("Next animation")
+        down_btn.clicked.connect(self._next_animation)
+        anim_bar.addWidget(up_btn)
+        anim_bar.addWidget(down_btn)
+        self._anim_label = QLabel()
+        anim_bar.addWidget(self._anim_label)
+        anim_bar.addStretch()
+        for label, slot, tip in (
+            ("+", self._add_animation, "Add animation"),
+            ("\u00d7", self._remove_animation, "Delete animation"),
+            ("\u270e", self._rename_animation, "Rename animation"),
+        ):
+            btn = QPushButton(label)
+            btn.setFixedSize(28, 22)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            anim_bar.addWidget(btn)
+        root.addLayout(anim_bar)
 
         # Button bar.
         btn_bar = QHBoxLayout()

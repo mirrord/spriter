@@ -326,6 +326,7 @@ class MainWindow(QMainWindow):
         self._timeline.frame_duration_changed.connect(
             lambda fi, ms: self._canvas.invalidate_cache()
         )
+        self._timeline.animation_changed.connect(self._on_animation_changed)
         timeline_dock = QDockWidget("Timeline", self)
         timeline_dock.setWidget(self._timeline)
         timeline_dock.setObjectName("timeline_dock")
@@ -805,6 +806,19 @@ class MainWindow(QMainWindow):
             self._canvas.invalidate_cache()
             if self._canvas._tool:
                 self._canvas._tool.frame_index = frame_index
+
+    def _on_animation_changed(self, timeline_index: int) -> None:
+        """Handle the active animation timeline changing in the timeline panel."""
+        if self._sprite is None:
+            return
+        if self._canvas:
+            self._canvas.active_frame = 0
+            self._canvas.invalidate_cache()
+            if self._canvas._tool:
+                self._canvas._tool.frame_index = 0
+            self._canvas.update()
+        if self._preview is not None:
+            self._preview.set_sprite(self._sprite)
 
     # ------------------------------------------------------------------
     # Animation menu actions
@@ -1330,6 +1344,17 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._remember_path(path, "open")
+        # Multi-row sheets can be split so each row becomes its own animation.
+        split_rows = (
+            QMessageBox.question(
+                self,
+                "Import Sheet",
+                "Does each row contain a separate animation?\n\n"
+                "Choose Yes to split each row into its own animation timeline; "
+                "choose No to import all frames as a single animation.",
+            )
+            == QMessageBox.StandardButton.Yes
+        )
         # Sheets with irregular frame spacing use contour-based auto-detection
         # instead of a fixed grid.
         inconsistent = (
@@ -1344,7 +1369,7 @@ class MainWindow(QMainWindow):
         )
         if inconsistent:
             try:
-                sprite = import_sheet_auto(path)
+                sprite = import_sheet_auto(path, split_rows=split_rows)
             except Exception as exc:
                 QMessageBox.critical(self, "Import Error", str(exc))
                 return
@@ -1381,7 +1406,7 @@ class MainWindow(QMainWindow):
         if not ok3:
             return
         try:
-            sprite = import_sheet(path, fw, fh, padding=pad)
+            sprite = import_sheet(path, fw, fh, padding=pad, split_rows=split_rows)
         except Exception as exc:
             QMessageBox.critical(self, "Import Error", str(exc))
             return

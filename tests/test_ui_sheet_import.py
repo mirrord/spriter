@@ -39,7 +39,7 @@ class TestImportSheetPrompt:
         ) as mock_grid, patch("spriter.ui.main_window.MainWindow._rebuild_ui"):
             win._import_sheet()
 
-        mock_auto.assert_called_once_with("sheet.png")
+        mock_auto.assert_called_once_with("sheet.png", split_rows=True)
         mock_grid.assert_not_called()
         assert win._sprite is sprite
         win._unsaved = False

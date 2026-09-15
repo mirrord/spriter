@@ -40,8 +40,19 @@ class SheetLayout(Enum):
 
 
 def _get_frame_images(sprite: Sprite) -> list[np.ndarray]:
-    """Return composited RGBA arrays for every frame."""
+    """Return composited RGBA arrays for every frame of the active timeline."""
     return [composite_frame(sprite, fi) for fi in range(sprite.frame_count)]
+
+
+def _get_timeline_frame_images(sprite: Sprite, timeline_index: int) -> list[np.ndarray]:
+    """Return composited RGBA arrays for every frame of a specific timeline."""
+    saved = sprite.active_timeline_index
+    sprite.set_active_timeline(timeline_index)
+    try:
+        images = [composite_frame(sprite, fi) for fi in range(sprite.frame_count)]
+    finally:
+        sprite.set_active_timeline(saved)
+    return images
 
 
 def _sheet_dimensions(
@@ -81,11 +92,19 @@ def export_sheet(
     Args:
         sprite: Source sprite document.
         path: Output image path (format inferred from extension; PNG recommended).
-        layout: Frame arrangement — HORIZONTAL, VERTICAL, or GRID.
+        layout: Frame arrangement — HORIZONTAL, VERTICAL, or GRID.  Ignored when
+            the sprite has multiple animation timelines (each animation is then
+            packed onto its own row).
         cols: Number of columns for GRID layout (0 = auto square).
         padding: Pixel gap between and around each frame.
     """
     path = Path(path)
+
+    # Multiple animations → one row per animation.
+    if sprite.timeline_count > 1:
+        _export_multi_timeline_sheet(sprite, path, padding=padding)
+        return
+
     if sprite.frame_count == 0:
         raise ValueError("Sprite has no frames to export.")
 
@@ -104,6 +123,41 @@ def export_sheet(
         x = padding + col * (fw + padding)
         y = padding + row * (fh + padding)
         sheet[y : y + fh, x : x + fw] = frame_pixels
+
+    img = Image.fromarray(sheet, mode="RGBA")
+    img.save(str(path))
+
+
+def _export_multi_timeline_sheet(
+    sprite: Sprite,
+    path: Path,
+    *,
+    padding: int = 0,
+) -> None:
+    """Pack each animation timeline onto its own row of the sheet.
+
+    Rows correspond to animations (top-to-bottom); the grid width equals the
+    longest animation.  Shorter animations are left-aligned and their trailing
+    cells left transparent.
+    """
+    fw, fh = sprite.width, sprite.height
+    rows = sprite.timeline_count
+    per_row = [
+        _get_timeline_frame_images(sprite, ti) for ti in range(rows)
+    ]
+    cols = max((len(imgs) for imgs in per_row), default=0)
+    if cols == 0:
+        raise ValueError("Sprite has no frames to export.")
+
+    sheet_w = cols * fw + (cols + 1) * padding
+    sheet_h = rows * fh + (rows + 1) * padding
+    sheet = np.zeros((sheet_h, sheet_w, 4), dtype=np.uint8)
+
+    for row, imgs in enumerate(per_row):
+        for col, frame_pixels in enumerate(imgs):
+            x = padding + col * (fw + padding)
+            y = padding + row * (fh + padding)
+            sheet[y : y + fh, x : x + fw] = frame_pixels
 
     img = Image.fromarray(sheet, mode="RGBA")
     img.save(str(path))
@@ -151,6 +205,15 @@ def export_atlas(
     sheet_path = Path(sheet_path)
     atlas_path = Path(atlas_path)
 
+    if sprite.timeline_count > 1:
+        multi_atlas = _build_multi_timeline_atlas(sprite, sheet_path, padding=padding)
+        export_sheet(sprite, sheet_path, layout=layout, cols=cols, padding=padding)
+        atlas_path.write_text(
+            json.dumps(multi_atlas, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return multi_atlas
+
     fw, fh = sprite.width, sprite.height
     n = sprite.frame_count
     sheet_w, sheet_h, actual_cols, _ = _sheet_dimensions(
@@ -185,12 +248,48 @@ def export_atlas(
     return atlas
 
 
+def _build_multi_timeline_atlas(
+    sprite: Sprite,
+    sheet_path: Path,
+    *,
+    padding: int = 0,
+) -> dict:
+    """Build an atlas dict for the row-per-animation sheet layout."""
+    fw, fh = sprite.width, sprite.height
+    rows = sprite.timeline_count
+    timelines = sprite.timelines
+    cols = max((tl.frame_count for tl in timelines), default=0)
+    sheet_w = cols * fw + (cols + 1) * padding
+    sheet_h = rows * fh + (rows + 1) * padding
+
+    atlas: dict = {
+        "meta": {
+            "image": sheet_path.name,
+            "size": {"w": sheet_w, "h": sheet_h},
+            "scale": "1",
+        },
+        "frames": {},
+    }
+    for row, timeline in enumerate(timelines):
+        for fi, frame in enumerate(timeline._frames):
+            x = padding + fi * (fw + padding)
+            y = padding + row * (fh + padding)
+            name = f"{timeline.name}_{fi:04d}"
+            atlas["frames"][name] = {
+                "frame": {"x": x, "y": y, "w": fw, "h": fh},
+                "duration": frame.duration_ms,
+                "animation": timeline.name,
+            }
+    return atlas
+
+
 def import_sheet(
     path: str | Path,
     frame_width: int,
     frame_height: int,
     *,
     padding: int = 0,
+    split_rows: bool = False,
 ) -> Sprite:
     """Import a sprite sheet image as a new multi-frame Sprite.
 
@@ -202,10 +301,13 @@ def import_sheet(
         frame_width: Width of each frame cell in pixels.
         frame_height: Height of each frame cell in pixels.
         padding: Pixel gap between frame cells (same as used during export).
+        split_rows: When True, each grid row becomes a separate animation
+            timeline instead of a single continuous animation.
 
     Returns:
-        A new :class:`~spriter.core.sprite.Sprite` with one layer and
-        one frame per cell found in the sheet.
+        A new :class:`~spriter.core.sprite.Sprite` with one layer.  With
+        *split_rows* enabled it has one timeline per row; otherwise a single
+        timeline with one frame per cell.
     """
     path = Path(path)
     img = Image.open(str(path)).convert("RGBA")
@@ -225,12 +327,29 @@ def import_sheet(
 
     sprite = Sprite(frame_width, frame_height)
     sprite.add_layer("Background")
+    li = 0
+
+    if split_rows and rows > 1:
+        for row in range(rows):
+            if row == 0:
+                sprite.rename_timeline(0, "Animation 1")
+            else:
+                sprite.add_timeline(f"Animation {row + 1}")
+            sprite.set_active_timeline(row)
+            while sprite.frame_count < cols:
+                sprite.add_frame()
+            for col in range(cols):
+                x = padding + col * step_x
+                y = padding + row * step_y
+                cell = arr[y : y + frame_height, x : x + frame_width].copy()
+                sprite.set_cel_pixels(li, col, cell)
+        sprite.set_active_timeline(0)
+        return sprite
 
     frame_count = cols * rows
     for _ in range(frame_count):
         sprite.add_frame()
 
-    li = 0
     fi = 0
     for row in range(rows):
         for col in range(cols):
@@ -418,6 +537,8 @@ def _label_components(
 
 def import_sheet_auto(
     source: str | Path | np.ndarray | Image.Image,
+    *,
+    split_rows: bool = False,
 ) -> Sprite:
     """Import a sprite sheet with inconsistent frame spacing.
 
@@ -430,6 +551,8 @@ def import_sheet_auto(
     Args:
         source: Path to an image file, a PIL Image, or an ``H×W×{3,4}``
             ``uint8`` NumPy array.
+        split_rows: When True, each detected row band becomes a separate
+            animation timeline instead of a single continuous animation.
 
     Returns:
         A new :class:`~spriter.core.sprite.Sprite` with one layer and one
@@ -474,16 +597,16 @@ def import_sheet_auto(
         if not placed:
             rows.append([i])
             row_bottom.append(y1)
-    ordered: list[int] = []
-    for r in sorted(range(len(rows)), key=lambda r: min(boxes[i][0] for i in rows[r])):
-        ordered.extend(sorted(rows[r], key=lambda i: boxes[i][2]))
 
-    sprite = Sprite(frame_w, frame_h)
-    sprite.add_layer("Background")
-    for _ in range(count):
-        sprite.add_frame()
+    # Row bands sorted top-to-bottom, candidates within a band left-to-right.
+    bands: list[list[int]] = [
+        sorted(rows[r], key=lambda i: boxes[i][2])
+        for r in sorted(
+            range(len(rows)), key=lambda r: min(boxes[i][0] for i in rows[r])
+        )
+    ]
 
-    for fi, i in enumerate(ordered):
+    def _cel_for(i: int) -> np.ndarray:
         y0, y1, x0, x1 = boxes[i]
         bw = x1 - x0 + 1
         bh = y1 - y0 + 1
@@ -496,7 +619,30 @@ def import_sheet_auto(
         oy = (frame_h - bh) // 2
         ox = (frame_w - bw) // 2
         cel[oy : oy + bh, ox : ox + bw] = crop
-        sprite.set_cel_pixels(0, fi, cel)
+        return cel
+
+    sprite = Sprite(frame_w, frame_h)
+    sprite.add_layer("Background")
+
+    if split_rows and len(bands) > 1:
+        for r, band in enumerate(bands):
+            if r == 0:
+                sprite.rename_timeline(0, "Animation 1")
+            else:
+                sprite.add_timeline(f"Animation {r + 1}")
+            sprite.set_active_timeline(r)
+            while sprite.frame_count < len(band):
+                sprite.add_frame()
+            for fi, i in enumerate(band):
+                sprite.set_cel_pixels(0, fi, _cel_for(i))
+        sprite.set_active_timeline(0)
+        return sprite
+
+    ordered: list[int] = [i for band in bands for i in band]
+    for _ in range(count):
+        sprite.add_frame()
+    for fi, i in enumerate(ordered):
+        sprite.set_cel_pixels(0, fi, _cel_for(i))
 
     return sprite
 

@@ -13,8 +13,12 @@ from __future__ import annotations
 from enum import Enum
 from typing import TYPE_CHECKING
 
+from .frame import Cel, Frame
+
 if TYPE_CHECKING:
     from .sprite import Sprite
+
+CelKey = tuple[int, int]  # (layer_index, frame_index)
 
 
 class LoopMode(Enum):
@@ -179,3 +183,35 @@ class Animation:
         if self.loop_mode == LoopMode.ONE_SHOT:
             return min(current + 1, total - 1)
         return (current + 1) % total
+
+
+class AnimationTimeline:
+    """A single named animation: its own frames, cels and playback settings.
+
+    A :class:`~spriter.core.sprite.Sprite` owns one or more timelines and
+    displays one at a time.  Layers and canvas size are shared across all
+    timelines; frames and pixel data (cels) are private to each timeline.
+
+    Args:
+        name: Display name (e.g. ``"idle"``, ``"run"``).
+        animation: Playback settings; a fresh :class:`Animation` is created
+            when omitted.
+    """
+
+    def __init__(
+        self,
+        name: str = "Animation 1",
+        *,
+        animation: Animation | None = None,
+    ) -> None:
+        self.name = name
+        self._frames: list[Frame] = []
+        self._cels: dict[CelKey, Cel] = {}
+        self.animation: Animation = animation if animation is not None else Animation()
+
+    @property
+    def frame_count(self) -> int:
+        return len(self._frames)
+
+    def __repr__(self) -> str:
+        return f"AnimationTimeline({self.name!r}, {len(self._frames)} frames)"

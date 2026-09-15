@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 """Animation timeline panel widget.
 
-:class:`TimelinePanel` displays all frames as a horizontal strip of
-clickable cells.  It sits in a dock at the bottom of the main window and
-coordinates frame navigation with the canvas and preview widgets.
+:class:`TimelinePanel` displays all frames of the active animation timeline
+as a horizontal strip of clickable cells, plus an animation navigation bar
+(up/down + add/remove/rename) for switching between a sprite's timelines.
+It sits in a dock at the bottom of the main window and coordinates frame
+and animation navigation with the canvas and preview widgets.
 
 Signals
 -------
@@ -14,6 +16,9 @@ frame_selected(int)
 frame_duration_changed(int, int)
     Emitted after the user edits a frame's duration; carries
     ``(frame_index, new_duration_ms)``.
+animation_changed(int)
+    Emitted after the active animation timeline changes; carries the new
+    timeline index.
 """
 
 from __future__ import annotations

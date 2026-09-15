@@ -6,9 +6,12 @@
 A ``.spriter`` file is a **JSON** document that contains:
 
 * Sprite metadata (canvas size, color mode, format version).
-* Layer metadata list (name, visibility, blend mode, opacity).
-* Frame metadata list (duration).
-* Cel pixel data: one Base64-encoded PNG per (layer, frame) pair.
+* Layer metadata list (name, visibility, blend mode, opacity) — shared across
+  all animation timelines.
+* One or more animation timelines (format version 2+), each with its own name,
+  loop mode, FPS, frame list, and cel pixel data (one Base64-encoded PNG per
+  (layer, frame) pair). Version 1 files (a single top-level frame/cel list) are
+  still readable and are loaded as one timeline named "Animation 1".
 
 Autosave files are written next to the project path with an ``~`` suffix
 (e.g. ``my_sprite.spriter~``) and are automatically removed on a successful

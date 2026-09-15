@@ -5,11 +5,18 @@
 
 Functions
 ---------
-* :func:`export_sheet`  — pack all frames into a single image file
+* :func:`export_sheet`  — pack all frames into a single image file; sprites
+  with multiple animation timelines are packed one row per animation
 * :func:`export_atlas`  — pack frames + write a JSON atlas
-* :func:`import_sheet`  — split a sprite sheet into frames of a new Sprite
-* :func:`import_sheet_auto`  — detect irregularly spaced frames and centre them
+* :func:`import_sheet`  — split a sprite sheet into frames of a new Sprite,
+  optionally splitting each grid row into its own animation timeline
+* :func:`import_sheet_auto`  — detect irregularly spaced frames and centre them,
+  optionally splitting each detected row band into its own animation timeline
 * :func:`estimate_sheet_layout`  — guess frame size + padding from a sheet image
+* :func:`detect_background_color`  — detect a solid background colour from the
+  sheet border
+* :func:`remove_background`  — erase a colour to transparency across all cels
+* :func:`split_background`  — move a background colour onto its own layer
 
 Enums
 -----

@@ -28,6 +28,8 @@ import numpy as np
 from PIL import Image
 
 from ..core.compositor import composite_frame
+from ..core.frame import Cel
+from ..core.layer import Layer
 from ..core.sprite import Sprite
 
 
@@ -360,6 +362,113 @@ def import_sheet(
             fi += 1
 
     return sprite
+
+
+# ---------------------------------------------------------------------------
+# Background detection & handling
+# ---------------------------------------------------------------------------
+
+BackgroundColor = tuple[int, int, int, int]
+
+
+def detect_background_color(
+    source: str | Path | np.ndarray | Image.Image,
+    *,
+    coverage: float = 0.5,
+) -> BackgroundColor | None:
+    """Detect a solid background colour in a sprite sheet.
+
+    Samples the border pixels (outermost rows and columns) and returns the
+    modal RGBA colour when it is opaque and accounts for at least *coverage*
+    of the border.  Returns ``None`` when the border is already transparent or
+    has no dominant colour — i.e. there is no removable background.
+
+    Args:
+        source: Path to an image file, a PIL Image, or an ``H×W×{3,4}``
+            ``uint8`` NumPy array.
+        coverage: Minimum fraction of border pixels the dominant colour must
+            occupy to be considered a background.
+
+    Returns:
+        The detected background colour as an ``(r, g, b, a)`` tuple, or
+        ``None`` if no background is found.
+    """
+    arr = _load_rgba(source)
+    h, w = arr.shape[:2]
+    if h == 0 or w == 0:
+        return None
+    border = np.concatenate(
+        [
+            arr[0, :, :].reshape(-1, 4),
+            arr[-1, :, :].reshape(-1, 4),
+            arr[:, 0, :].reshape(-1, 4),
+            arr[:, -1, :].reshape(-1, 4),
+        ],
+        axis=0,
+    )
+    colors, counts = np.unique(border, axis=0, return_counts=True)
+    top = int(np.argmax(counts))
+    bg = colors[top]
+    if int(bg[3]) == 0:  # border already transparent → nothing to remove
+        return None
+    if counts[top] / border.shape[0] < coverage:
+        return None
+    return (int(bg[0]), int(bg[1]), int(bg[2]), int(bg[3]))
+
+
+def _color_match_mask(pixels: np.ndarray, color: BackgroundColor) -> np.ndarray:
+    """Boolean ``H×W`` mask of pixels whose RGB equals *color*."""
+    return (
+        (pixels[..., 0] == color[0])
+        & (pixels[..., 1] == color[1])
+        & (pixels[..., 2] == color[2])
+    )
+
+
+def remove_background(sprite: Sprite, color: BackgroundColor) -> None:
+    """Make every pixel matching *color* fully transparent, across all cels.
+
+    Args:
+        sprite: The sprite to modify in place.
+        color: The background colour to erase (RGB channels are matched).
+    """
+    for timeline in sprite.timelines:
+        for cel in timeline._cels.values():
+            if cel.pixels is None:
+                continue
+            match = _color_match_mask(cel.pixels, color)
+            if match.any():
+                cel.pixels[match] = 0
+
+
+def split_background(sprite: Sprite, color: BackgroundColor) -> None:
+    """Separate the background colour onto its own layer beneath the content.
+
+    The background colour is erased from every existing layer and a new opaque
+    "Background" layer filled with *color* is inserted at the bottom of the
+    stack (in every timeline).  The imported content layer is renamed
+    "Foreground" when it still carries the default import name.
+
+    Args:
+        sprite: The sprite to modify in place.
+        color: The detected background colour.
+    """
+    remove_background(sprite, color)
+    fill = np.empty((sprite.height, sprite.width, 4), dtype=np.uint8)
+    fill[..., 0] = color[0]
+    fill[..., 1] = color[1]
+    fill[..., 2] = color[2]
+    fill[..., 3] = 255
+    for timeline in sprite.timelines:
+        shifted: dict[tuple[int, int], Cel] = {}
+        for (li, fi), cel in timeline._cels.items():
+            shifted[(li + 1, fi)] = cel
+        for fi in range(len(timeline._frames)):
+            shifted[(0, fi)] = Cel(fill.copy())
+        timeline._cels = shifted
+    sprite._layers.insert(0, Layer("Background"))
+    if len(sprite._layers) >= 2 and sprite._layers[1].name == "Background":
+        sprite._layers[1].name = "Foreground"
 
 
 # ---------------------------------------------------------------------------

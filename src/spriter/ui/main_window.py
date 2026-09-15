@@ -1373,6 +1373,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.critical(self, "Import Error", str(exc))
                 return
+            self._maybe_handle_background(sprite, path)
             self._sprite = sprite
             self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
             self._current_path = None
@@ -1410,6 +1411,7 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             QMessageBox.critical(self, "Import Error", str(exc))
             return
+        self._maybe_handle_background(sprite, path)
         self._sprite = sprite
         self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
         self._current_path = None
@@ -1417,6 +1419,43 @@ class MainWindow(QMainWindow):
         self._rebuild_ui()
         w, h = sprite.width, sprite.height
         self._status_canvas.setText(f"{w}\u00d7{h}")
+
+    def _maybe_handle_background(self, sprite: Sprite, source_path: str) -> None:
+        """Detect a sheet background colour and prompt the user how to handle it."""
+        from ..io.spritesheet import (
+            detect_background_color,
+            remove_background,
+            split_background,
+        )
+
+        try:
+            color = detect_background_color(source_path)
+        except Exception:
+            color = None
+        if color is None:
+            return
+        r, g, b, _a = color
+        options = [
+            "Remove background (make transparent)",
+            "Separate background & foreground layers",
+            "Import as-is",
+        ]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Background Detected",
+            f"A background colour (RGB {r}, {g}, {b}) was detected.\n"
+            "How would you like to handle it?",
+            options,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        if choice == options[0]:
+            remove_background(sprite, color)
+        elif choice == options[1]:
+            split_background(sprite, color)
+        # options[2] ("Import as-is") leaves the sprite unchanged.
 
     # ------------------------------------------------------------------
     # Palette import / export

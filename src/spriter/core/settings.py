@@ -64,6 +64,10 @@ class Settings:
     last_open_directory: str = ""
     last_save_directory: str = ""
 
+    # ── Diffusion (optional AI frame prediction) ─────────────────────
+    # Filesystem path to the selected local diffusion model directory.
+    diffusion_model_path: str = ""
+
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
     keybindings: dict[str, str]
@@ -95,6 +99,7 @@ class Settings:
         self.max_recent_files = 10
         self.last_open_directory: str = ""
         self.last_save_directory: str = ""
+        self.diffusion_model_path: str = ""
         self.keybindings: dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
@@ -116,6 +121,7 @@ class Settings:
             "max_recent_files": self.max_recent_files,
             "last_open_directory": self.last_open_directory,
             "last_save_directory": self.last_save_directory,
+            "diffusion_model_path": self.diffusion_model_path,
             "keybindings": dict(self.keybindings),
         }
 
@@ -154,6 +160,9 @@ class Settings:
         )
         s.last_save_directory = str(
             data.get("last_save_directory", old_last_dir or s.last_save_directory)
+        )
+        s.diffusion_model_path = str(
+            data.get("diffusion_model_path", s.diffusion_model_path)
         )
         kb = data.get("keybindings")
         if isinstance(kb, dict):

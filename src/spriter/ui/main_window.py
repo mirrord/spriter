@@ -20,7 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QTimer, QUrl
+from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -36,6 +36,7 @@ from PyQt6.QtWidgets import (
     QMainWindow,
     QMenu,
     QMessageBox,
+    QProgressDialog,
     QRadioButton,
     QStatusBar,
     QVBoxLayout,
@@ -44,6 +45,7 @@ from PyQt6.QtWidgets import (
 
 from spriter.__about__ import __version__
 
+from ..commands.ai_ops import GenerateFrameCommand
 from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -98,6 +100,29 @@ from .timeline import TimelinePanel
 from .toolbar import ToolBar
 
 
+class _DiffusionWorker(QThread):
+    """Runs a blocking callable off the UI thread.
+
+    Emits :attr:`finished_ok` with the callable's result on success or
+    :attr:`failed` with the exception message on error.
+    """
+
+    finished_ok = pyqtSignal(object)
+    failed = pyqtSignal(str)
+
+    def __init__(self, fn, parent=None) -> None:
+        super().__init__(parent)
+        self._fn = fn
+
+    def run(self) -> None:
+        try:
+            result = self._fn()
+        except Exception as exc:  # surface any backend/model error to the UI
+            self.failed.emit(str(exc))
+            return
+        self.finished_ok.emit(result)
+
+
 class MainWindow(QMainWindow):
     """Top-level application window.
 
@@ -135,6 +160,9 @@ class MainWindow(QMainWindow):
         self._layers_panel: LayersPanel | None = None
         self._timeline: TimelinePanel | None = None
         self._preview: PreviewWindow | None = None
+
+        # Background worker for diffusion tasks (kept to prevent GC mid-run).
+        self._diffusion_worker: _DiffusionWorker | None = None
 
         # Status-bar labels
         self._status_cursor = QLabel("0, 0")
@@ -506,10 +534,29 @@ class MainWindow(QMainWindow):
             view_menu, "Clear Reference Image", self._clear_reference_image
         )
 
+        # ── Diffusion (optional AI frame prediction) ──────────────────
+        diffusion_menu = mb.addMenu("&Diffusion")
+        self._add_action(
+            diffusion_menu, "&Select Model\u2026", self._diffusion_select_model
+        )
+        self._add_action(
+            diffusion_menu, "&Download Model\u2026", self._diffusion_download_model
+        )
+        self._add_action(
+            diffusion_menu, "Model &Info\u2026", self._diffusion_model_info
+        )
+        diffusion_menu.addSeparator()
+        self._add_action(
+            diffusion_menu,
+            "&Generate Next Frame\u2026",
+            self._diffusion_generate_frame,
+        )
+
         # ── Preferences ───────────────────────────────────────────────
         prefs_menu = mb.addMenu("&Preferences")
-        self._add_action(prefs_menu, "&Preferences\u2026", self._open_preferences)
-        # ── Help ──────────────────────────────────────────────────────
+        self._add_action(
+            prefs_menu, "&Preferences\u2026", self._open_preferences
+        )  # ── Help ──────────────────────────────────────────────────────
         help_menu = mb.addMenu("&Help")
         self._add_action(help_menu, "&About…", self._show_about)
 
@@ -1178,6 +1225,197 @@ class MainWindow(QMainWindow):
             "About Spriter",
             "Spriter \u2014 Pixel art editor\n\nVersion " + __version__,
         )
+
+    # ------------------------------------------------------------------
+    # Diffusion (optional AI frame prediction)
+    # ------------------------------------------------------------------
+
+    def _diffusion_models_dir(self) -> Path:
+        """Default directory where downloaded models are stored."""
+        return Path.home() / ".config" / "spriter" / "models"
+
+    def _diffusion_select_model(self) -> None:
+        start = self._settings.diffusion_model_path or str(self._diffusion_models_dir())
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Select Model",
+            "Model type:",
+            ["Model folder", "Single .safetensors file"],
+            0,
+            False,
+        )
+        if not ok:
+            return
+        if choice == "Single .safetensors file":
+            path, _ = QFileDialog.getOpenFileName(
+                self,
+                "Select Diffusion Model File",
+                start,
+                "Safetensors Model (*.safetensors)",
+            )
+        else:
+            path = QFileDialog.getExistingDirectory(
+                self, "Select Diffusion Model Folder", start
+            )
+        if not path:
+            return
+        self._settings.diffusion_model_path = path
+        self._settings.save()
+        QMessageBox.information(self, "Diffusion", f"Model set to:\n{path}")
+
+    def _diffusion_model_info(self) -> None:
+        from ..ai import diffusion
+
+        model_path = self._settings.diffusion_model_path
+        if not model_path:
+            QMessageBox.information(
+                self,
+                "Model Info",
+                "No diffusion model selected. Use Diffusion \u2192 Select Model "
+                "or Download Model first.",
+            )
+            return
+        info = diffusion.model_info(model_path)
+        available = (
+            "Yes" if diffusion.is_available() else "No (install spriter[diffusion])"
+        )
+        lines = [
+            f"Path: {info['path']}",
+            f"Type: {info['type']}",
+            f"Exists: {'Yes' if info['exists'] else 'No'}",
+            f"Size: {self._format_size(info['size_bytes'])}",
+            f"Dependencies installed: {available}",
+        ]
+        QMessageBox.information(self, "Model Info", "\n".join(lines))
+
+    @staticmethod
+    def _format_size(num_bytes: int) -> str:
+        size = float(num_bytes)
+        for unit in ("B", "KB", "MB", "GB", "TB"):
+            if size < 1024.0 or unit == "TB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
+            size /= 1024.0
+        return f"{size:.1f} TB"
+
+    def _diffusion_download_model(self) -> None:
+        from ..ai import diffusion
+
+        if not diffusion.is_available():
+            self._diffusion_unavailable_message()
+            return
+        repo_id, ok = QInputDialog.getText(
+            self,
+            "Download Model",
+            "Hugging Face repo ID (e.g. runwayml/stable-diffusion-v1-5):",
+        )
+        if not ok or not repo_id.strip():
+            return
+        repo_id = repo_id.strip()
+        dest = self._diffusion_models_dir() / repo_id.replace("/", "__")
+
+        def task() -> str:
+            path = diffusion.download_model(repo_id, dest)
+            return str(path)
+
+        def on_done(result) -> None:
+            self._settings.diffusion_model_path = str(result)
+            self._settings.save()
+            QMessageBox.information(
+                self, "Download Model", f"Model downloaded to:\n{result}"
+            )
+
+        self._run_diffusion_task(task, on_done, f"Downloading {repo_id}\u2026")
+
+    def _diffusion_generate_frame(self) -> None:
+        if self._sprite is None:
+            return
+        from ..ai import diffusion
+        from ..ai.postprocess import prepare_generated_frame
+
+        if not diffusion.is_available():
+            self._diffusion_unavailable_message()
+            return
+        model_path = self._settings.diffusion_model_path
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.information(
+                self,
+                "Generate Next Frame",
+                "No diffusion model selected. Use Diffusion \u2192 Select Model "
+                "or Download Model first.",
+            )
+            return
+
+        prompt, ok = QInputDialog.getText(
+            self,
+            "Generate Next Frame",
+            "Optional prompt to guide generation:",
+        )
+        if not ok:
+            return
+
+        from ..core.compositor import composite_frame
+
+        li, fi = self._active_layer_frame()
+        init_rgba = composite_frame(self._sprite, fi)
+        canvas_w, canvas_h = self._sprite.width, self._sprite.height
+
+        def task():
+            pipeline = diffusion.load_pipeline(model_path)
+            generated = diffusion.generate(pipeline, init_rgba, prompt.strip())
+            return prepare_generated_frame(generated, canvas_w, canvas_h)
+
+        def on_done(pixels) -> None:
+            assert self._sprite is not None
+            cmd = GenerateFrameCommand(self._sprite, fi, li, pixels)
+            self._stack.push(cmd)
+            new_fi = fi + 1
+            if self._canvas:
+                self._canvas.active_frame = new_fi
+                self._canvas.invalidate_cache()
+            if self._timeline:
+                self._timeline.set_active_frame(new_fi)
+                self._timeline.refresh()
+            self._unsaved = True
+            self._refresh_undo_redo_labels()
+
+        self._run_diffusion_task(task, on_done, "Generating frame\u2026")
+
+    def _diffusion_unavailable_message(self) -> None:
+        QMessageBox.information(
+            self,
+            "Diffusion",
+            "Diffusion features require optional dependencies.\n\n"
+            "Install them with:\n    pip install spriter[diffusion]",
+        )
+
+    def _run_diffusion_task(self, task, on_done, label: str) -> None:
+        """Run *task* in a worker thread behind an indeterminate progress dialog."""
+        progress = QProgressDialog(label, "", 0, 0, self)
+        progress.setWindowTitle("Diffusion")
+        progress.setCancelButton(None)
+        progress.setMinimumDuration(0)
+        progress.setValue(0)
+
+        worker = _DiffusionWorker(task, self)
+        # Keep a reference so the thread is not garbage-collected mid-run.
+        self._diffusion_worker = worker
+
+        def cleanup() -> None:
+            progress.close()
+            self._diffusion_worker = None
+
+        def handle_ok(result) -> None:
+            cleanup()
+            on_done(result)
+
+        def handle_err(message: str) -> None:
+            cleanup()
+            QMessageBox.critical(self, "Diffusion Error", message)
+
+        worker.finished_ok.connect(handle_ok)
+        worker.failed.connect(handle_err)
+        worker.start()
+        progress.show()
 
     # ------------------------------------------------------------------
     # Phase 7: Export actions

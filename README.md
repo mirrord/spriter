@@ -27,6 +27,7 @@ A pixel-art sprite editor built with Python and PyQt6. Spriter provides a focuse
 - **Recent files** — quick-open list in the File menu
 - **Drag-and-drop** — open project or image files by dropping onto the window
 - **Preferences** — persistent settings for canvas defaults, grid/checker colors, undo depth, autosave interval, theme, and customizable keybindings
+- **Diffusion frame prediction** *(optional)* — generate the next animation frame from the current one using a local, user-selectable Hugging Face diffusers image-to-image model; the result has its flat background removed and is uniformly scaled to fit the canvas (see [Diffusion](#diffusion-optional))
 
 ## Installation
 
@@ -35,6 +36,13 @@ pip install spriter
 ```
 
 Requires Python ≥ 3.8 and a working Qt 6 installation (pulled in automatically via `PyQt6`).
+
+The optional diffusion frame-prediction feature needs extra machine-learning
+dependencies, installed via the `diffusion` extra:
+
+```console
+pip install spriter[diffusion]
+```
 
 ## Usage
 
@@ -80,6 +88,22 @@ main()
 | Move | `M` |
 | Text | `T` |
 | Swap foreground/background | `X` |
+
+### Diffusion (optional)
+
+With the `diffusion` extra installed, the **Diffusion** menu offers:
+
+- **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file.
+- **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
+  (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.
+- **Model Info…** — show details about the currently selected model (path, type, size, and whether the optional dependencies are installed).
+- **Generate Next Frame…** — generate a new frame from the current one using
+  image-to-image diffusion. You can supply an optional text prompt to guide the
+  result. The generated image has its flat background keyed out and is uniformly
+  scaled down to fit the canvas, then inserted as a new frame right after the
+  current one (undoable).
+
+Generation runs on the GPU when a CUDA device is available, otherwise on the CPU.
 
 ## Development
 

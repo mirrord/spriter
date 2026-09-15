@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: MIT
 """Animation timeline panel widget.
 
-:class:`TimelinePanel` displays all frames as a horizontal strip of
-clickable cells.  It sits in a dock at the bottom of the main window and
-coordinates frame navigation with the canvas and preview widgets.
+:class:`TimelinePanel` displays all frames of the active animation timeline
+as a horizontal strip of clickable cells, plus an animation navigation bar
+(up/down + add/remove/rename) for switching between a sprite's timelines.
+It sits in a dock at the bottom of the main window and coordinates frame
+and animation navigation with the canvas and preview widgets.
 
 Signals
 -------
@@ -14,14 +16,15 @@ frame_selected(int)
 frame_duration_changed(int, int)
     Emitted after the user edits a frame's duration; carries
     ``(frame_index, new_duration_ms)``.
+animation_changed(int)
+    Emitted after the active animation timeline changes; carries the new
+    timeline index.
 """
 
 from __future__ import annotations
 
 import numpy as np
-from typing import List, Optional
-
-from PyQt6.QtCore import Qt, QPoint, QEvent, pyqtSignal
+from PyQt6.QtCore import QEvent, QPoint, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -31,11 +34,15 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
 
+from ..commands.animation_ops import (
+    AddTimelineCommand,
+    RemoveTimelineCommand,
+    RenameTimelineCommand,
+)
 from ..commands.base import CommandStack
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -74,8 +81,8 @@ class _FrameCell(QWidget):
         frame_index: int,
         duration_ms: int,
         active: bool = False,
-        thumbnail: Optional[QPixmap] = None,
-        parent: Optional[QWidget] = None,
+        thumbnail: QPixmap | None = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.frame_index = frame_index
@@ -121,7 +128,6 @@ class _FrameCell(QWidget):
 
         # Frame number (top-left, small)
         painter.setPen(QColor(240, 240, 240))
-        from PyQt6.QtCore import QRect
         from PyQt6.QtGui import QFont
 
         small_font = QFont()
@@ -131,7 +137,6 @@ class _FrameCell(QWidget):
 
         # Duration (ms) — bottom strip
         painter.setPen(QColor(180, 180, 180))
-        from PyQt6.QtCore import QRect
 
         bot_rect = self.rect().adjusted(0, self._CELL_H - 14, 0, 0)
         painter.drawText(
@@ -173,24 +178,26 @@ class TimelinePanel(QWidget):
     frame_selected = pyqtSignal(int)
     #: Emitted when the user changes a frame's duration.
     frame_duration_changed = pyqtSignal(int, int)
+    #: Emitted when the active animation timeline changes; carries its index.
+    animation_changed = pyqtSignal(int)
 
     def __init__(
         self,
         sprite: Sprite,
         stack: CommandStack,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sprite = sprite
         self._stack = stack
         self._active_frame: int = 0
-        self._cells: List[_FrameCell] = []
+        self._cells: list[_FrameCell] = []
 
         # Drag-to-reorder state
-        self._drag_source: Optional[int] = None  # frame index being dragged
-        self._drag_start_pos: Optional[QPoint] = None
+        self._drag_source: int | None = None  # frame index being dragged
+        self._drag_start_pos: QPoint | None = None
         self._dragging: bool = False
-        self._drag_indicator: Optional[int] = None  # insert-before index
+        self._drag_indicator: int | None = None  # insert-before index
 
         self._build_ui()
         self.refresh()
@@ -236,6 +243,60 @@ class TimelinePanel(QWidget):
             cell.installEventFilter(self)
             self._strip_layout.addWidget(cell)
             self._cells.append(cell)
+        self._update_animation_label()
+
+    # ------------------------------------------------------------------
+    # Animation (timeline) navigation
+    # ------------------------------------------------------------------
+
+    def _update_animation_label(self) -> None:
+        """Refresh the ``Anim i/N: name`` label from the sprite state."""
+        idx = self._sprite.active_timeline_index
+        total = self._sprite.timeline_count
+        name = self._sprite.timelines[idx].name
+        self._anim_label.setText(f"Anim {idx + 1}/{total}: {name}")
+
+    def _go_to_animation(self, index: int) -> None:
+        index = max(0, min(self._sprite.timeline_count - 1, index))
+        if index == self._sprite.active_timeline_index:
+            return
+        self._sprite.set_active_timeline(index)
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(index)
+
+    def _prev_animation(self) -> None:
+        self._go_to_animation(self._sprite.active_timeline_index - 1)
+
+    def _next_animation(self) -> None:
+        self._go_to_animation(self._sprite.active_timeline_index + 1)
+
+    def _add_animation(self) -> None:
+        self._stack.push(AddTimelineCommand(self._sprite))
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(self._sprite.active_timeline_index)
+
+    def _remove_animation(self) -> None:
+        if self._sprite.timeline_count <= 1:
+            QMessageBox.warning(self, "Spriter", "Cannot delete the last animation.")
+            return
+        self._stack.push(
+            RemoveTimelineCommand(self._sprite, self._sprite.active_timeline_index)
+        )
+        self._active_frame = 0
+        self.refresh()
+        self.animation_changed.emit(self._sprite.active_timeline_index)
+
+    def _rename_animation(self) -> None:
+        idx = self._sprite.active_timeline_index
+        current = self._sprite.timelines[idx].name
+        name, ok = QInputDialog.getText(
+            self, "Rename Animation", "Animation name:", text=current
+        )
+        if ok and name and name != current:
+            self._stack.push(RenameTimelineCommand(self._sprite, idx, name))
+            self._update_animation_label()
 
     # ------------------------------------------------------------------
     # UI construction
@@ -245,6 +306,34 @@ class TimelinePanel(QWidget):
         root = QVBoxLayout(self)
         root.setContentsMargins(2, 2, 2, 2)
         root.setSpacing(2)
+
+        # Animation (timeline) navigation bar.
+        anim_bar = QHBoxLayout()
+        anim_bar.setSpacing(4)
+        up_btn = QPushButton("\u25b2")
+        up_btn.setFixedSize(28, 22)
+        up_btn.setToolTip("Previous animation")
+        up_btn.clicked.connect(self._prev_animation)
+        down_btn = QPushButton("\u25bc")
+        down_btn.setFixedSize(28, 22)
+        down_btn.setToolTip("Next animation")
+        down_btn.clicked.connect(self._next_animation)
+        anim_bar.addWidget(up_btn)
+        anim_bar.addWidget(down_btn)
+        self._anim_label = QLabel()
+        anim_bar.addWidget(self._anim_label)
+        anim_bar.addStretch()
+        for label, slot, tip in (
+            ("+", self._add_animation, "Add animation"),
+            ("\u00d7", self._remove_animation, "Delete animation"),
+            ("\u270e", self._rename_animation, "Rename animation"),
+        ):
+            btn = QPushButton(label)
+            btn.setFixedSize(28, 22)
+            btn.setToolTip(tip)
+            btn.clicked.connect(slot)
+            anim_bar.addWidget(btn)
+        root.addLayout(anim_bar)
 
         # Button bar.
         btn_bar = QHBoxLayout()
@@ -386,7 +475,7 @@ class TimelinePanel(QWidget):
     # Thumbnail helper
     # ------------------------------------------------------------------
 
-    def _make_thumbnail(self, frame_index: int) -> Optional[QPixmap]:
+    def _make_thumbnail(self, frame_index: int) -> QPixmap | None:
         """Composite *frame_index* and return a small QPixmap thumbnail."""
         if (
             self._sprite.frame_count == 0
@@ -486,7 +575,7 @@ class TimelinePanel(QWidget):
 
         return False
 
-    def _frame_index_at(self, strip_local: QPoint) -> Optional[int]:
+    def _frame_index_at(self, strip_local: QPoint) -> int | None:
         """Return the frame index of the cell under *strip_local* (strip widget coords)."""
         child = self._strip_widget.childAt(strip_local)
         if isinstance(child, _FrameCell):

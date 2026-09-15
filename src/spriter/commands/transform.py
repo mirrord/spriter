@@ -25,19 +25,19 @@ Commands
 
 from __future__ import annotations
 
-from typing import Dict, Optional, Tuple
-
 import numpy as np
 
 from ..commands.base import Command
-from ..core.frame import Cel
 from ..core.sprite import Sprite
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-CelKey = Tuple[int, int]
+CelKey = tuple[int, int]
+
+# Whole-document cel snapshot key: (timeline_index, layer_index, frame_index).
+CelSnapshotKey = tuple[int, int, int]
 
 
 def _get_pixels(sprite: Sprite, li: int, fi: int) -> np.ndarray:
@@ -52,22 +52,33 @@ def _set_pixels(sprite: Sprite, li: int, fi: int, pixels: np.ndarray) -> None:
     sprite.set_cel_pixels(li, fi, pixels)
 
 
-def _save_all_cels(sprite: Sprite) -> Dict[CelKey, np.ndarray]:
-    """Snapshot every cel's pixel buffer (for whole-sprite transforms)."""
-    saved: Dict[CelKey, np.ndarray] = {}
-    for li in range(sprite.layer_count):
-        for fi in range(sprite.frame_count):
-            pixels = _get_pixels(sprite, li, fi)
-            saved[(li, fi)] = pixels
+def _save_all_cels(sprite: Sprite) -> dict[CelSnapshotKey, np.ndarray]:
+    """Snapshot every cel's pixel buffer across all timelines.
+
+    Keys are ``(timeline_index, layer_index, frame_index)`` so whole-document
+    transforms (rotate, resize, scale, crop) can be undone across every
+    animation, not just the active one.
+    """
+    saved: dict[CelSnapshotKey, np.ndarray] = {}
+    active = sprite.active_timeline_index
+    for ti in range(sprite.timeline_count):
+        sprite.set_active_timeline(ti)
+        for li in range(sprite.layer_count):
+            for fi in range(sprite.frame_count):
+                saved[(ti, li, fi)] = _get_pixels(sprite, li, fi)
+    sprite.set_active_timeline(active)
     return saved
 
 
 def _restore_all_cels(
     sprite: Sprite,
-    saved: Dict[CelKey, np.ndarray],
+    saved: dict[CelSnapshotKey, np.ndarray],
 ) -> None:
-    for (li, fi), pixels in saved.items():
+    active = sprite.active_timeline_index
+    for (ti, li, fi), pixels in saved.items():
+        sprite.set_active_timeline(ti)
         sprite.set_cel_pixels(li, fi, pixels)
+    sprite.set_active_timeline(active)
 
 
 # ---------------------------------------------------------------------------
@@ -100,7 +111,7 @@ class FlipCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._horizontal = horizontal
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -141,12 +152,16 @@ class FlipCommand(Command):
 
 
 class RotateCommand(Command):
-    """Rotate the pixels of one cel.
+    """Rotate the entire canvas.
+
+    Every cel across all layers and frames is rotated together.  For 90°/270°
+    the canvas width and height are swapped so non-square sprites rotate
+    cleanly; 180° and arbitrary angles preserve the canvas dimensions.
 
     Args:
         sprite: The owning sprite.
-        layer_index: Layer to operate on.
-        frame_index: Frame to operate on.
+        layer_index: Retained for API compatibility (rotation is whole-canvas).
+        frame_index: Retained for API compatibility (rotation is whole-canvas).
         angle: Rotation angle.  One of ``90``, ``-90``, ``180``, or any
             arbitrary integer/float value.  For 90/180/-90 the exact
             ``numpy.rot90`` path is used; other values use PIL nearest-neighbour.
@@ -163,37 +178,47 @@ class RotateCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._angle = angle
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_cels: dict[CelSnapshotKey, np.ndarray] | None = None
+        self._old_size: tuple[int, int] | None = None
 
     @property
     def description(self) -> str:
         return f"Rotate {self._angle}°"
 
     def execute(self) -> None:
-        pixels = _get_pixels(self._sprite, self._li, self._fi)
-        self._old_pixels = pixels.copy()
+        self._old_cels = _save_all_cels(self._sprite)
+        self._old_size = (self._sprite.width, self._sprite.height)
+        active = self._sprite.active_timeline_index
         ang = self._angle % 360
-        if ang == 90:
-            result = np.rot90(pixels, k=3)  # 90° CW == -1 anti-clockwise turns
-        elif ang == 180:
-            result = np.rot90(pixels, k=2)
-        elif ang == 270:
-            result = np.rot90(pixels, k=1)  # 90° CCW
+        quarter = {90: 3, 180: 2, 270: 1}.get(ang)  # np.rot90 turns (CCW)
+        if quarter is not None:
+            rotated = {
+                key: np.rot90(px, k=quarter) for key, px in self._old_cels.items()
+            }
+            if ang in (90, 270):
+                # Swap canvas dimensions before writing the transposed cels.
+                self._sprite.resize_canvas(self._old_size[1], self._old_size[0])
+            for (ti, li, fi), px in rotated.items():
+                self._sprite.set_active_timeline(ti)
+                self._sprite.set_cel_pixels(li, fi, px)
         else:
             from PIL import Image as _PILImage
 
-            pil_img = _PILImage.fromarray(pixels, mode="RGBA")
-            pil_img = pil_img.rotate(
-                -self._angle,  # PIL rotates counter-clockwise; negate for CW
-                resample=_PILImage.Resampling.NEAREST,
-                expand=False,
-            )
-            result = np.array(pil_img, dtype=np.uint8)
-        _set_pixels(self._sprite, self._li, self._fi, result)
+            for (ti, li, fi), px in self._old_cels.items():
+                pil_img = _PILImage.fromarray(px, mode="RGBA").rotate(
+                    -self._angle,  # PIL rotates counter-clockwise; negate for CW
+                    resample=_PILImage.Resampling.NEAREST,
+                    expand=False,
+                )
+                self._sprite.set_active_timeline(ti)
+                self._sprite.set_cel_pixels(li, fi, np.array(pil_img, dtype=np.uint8))
+        self._sprite.set_active_timeline(active)
 
     def undo(self) -> None:
-        assert self._old_pixels is not None
-        _set_pixels(self._sprite, self._li, self._fi, self._old_pixels)
+        assert self._old_cels is not None and self._old_size is not None
+        if (self._sprite.width, self._sprite.height) != self._old_size:
+            self._sprite.resize_canvas(*self._old_size)
+        _restore_all_cels(self._sprite, self._old_cels)
 
 
 # ---------------------------------------------------------------------------
@@ -225,7 +250,7 @@ class ShiftCommand(Command):
         self._fi = frame_index
         self._dx = dx
         self._dy = dy
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -266,13 +291,13 @@ class OutlineCommand(Command):
         sprite: Sprite,
         layer_index: int,
         frame_index: int,
-        outline_color: Tuple[int, int, int, int] = (0, 0, 0, 255),
+        outline_color: tuple[int, int, int, int] = (0, 0, 0, 255),
     ) -> None:
         self._sprite = sprite
         self._li = layer_index
         self._fi = frame_index
         self._color = outline_color
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -322,8 +347,8 @@ class ReplaceColorCommand(Command):
         sprite: Sprite,
         layer_index: int,
         frame_index: int,
-        old_color: Tuple[int, int, int, int],
-        new_color: Tuple[int, int, int, int],
+        old_color: tuple[int, int, int, int],
+        new_color: tuple[int, int, int, int],
         tolerance: float = 0.0,
     ) -> None:
         self._sprite = sprite
@@ -332,7 +357,7 @@ class ReplaceColorCommand(Command):
         self._old_color = old_color
         self._new_color = new_color
         self._tolerance = tolerance
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -391,7 +416,7 @@ class InvertColorsCommand(Command):
         self._li = layer_index
         self._fi = frame_index
         self._respect_selection = respect_selection
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -457,7 +482,7 @@ class AdjustmentCommand(Command):
         self._contrast = contrast
         self._hue = hue
         self._saturation = saturation
-        self._old_pixels: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -542,9 +567,9 @@ class CanvasResizeCommand(Command):
         self._new_height = new_height
         self._offset_x = offset_x
         self._offset_y = offset_y
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:
@@ -606,10 +631,10 @@ class CropToSelectionCommand(Command):
         self._w = int(x_idx[-1] - x_idx[0] + 1)
         self._h = int(y_idx[-1] - y_idx[0] + 1)
         self._sprite = sprite
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
-        self._saved_mask: Optional[np.ndarray] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
+        self._saved_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -662,9 +687,9 @@ class AutocropCommand(Command):
     def __init__(self, sprite: Sprite) -> None:
         h, w = sprite.height, sprite.width
         any_opaque = np.zeros((h, w), dtype=bool)
-        for li in range(sprite.layer_count):
-            for fi in range(sprite.frame_count):
-                cel = sprite.get_cel(li, fi)
+        # Union of opaque pixels across every timeline (the canvas is shared).
+        for timeline in sprite.timelines:
+            for cel in timeline._cels.values():
                 if cel.pixels is None:
                     continue
                 any_opaque |= cel.pixels[..., 3] > 0
@@ -685,10 +710,10 @@ class AutocropCommand(Command):
         self._y0 = y0
         self._w = new_w
         self._h = new_h
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
-        self._saved_mask: Optional[np.ndarray] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
+        self._saved_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:
@@ -740,9 +765,9 @@ class ScaleCommand(Command):
         self._new_width = new_width
         self._new_height = new_height
         self._method = method
-        self._old_width: Optional[int] = None
-        self._old_height: Optional[int] = None
-        self._saved_cels: Optional[Dict[CelKey, np.ndarray]] = None
+        self._old_width: int | None = None
+        self._old_height: int | None = None
+        self._saved_cels: dict[CelSnapshotKey, np.ndarray] | None = None
 
     @property
     def description(self) -> str:
@@ -813,8 +838,8 @@ class ScaleSelectionCommand(Command):
         self._new_w = int(new_width)
         self._new_h = int(new_height)
         self._method = method
-        self._old_pixels: Optional[np.ndarray] = None
-        self._old_mask: Optional[np.ndarray] = None
+        self._old_pixels: np.ndarray | None = None
+        self._old_mask: np.ndarray | None = None
 
     @property
     def description(self) -> str:

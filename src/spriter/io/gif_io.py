@@ -12,7 +12,6 @@ Functions
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Union
 
 import numpy as np
 from PIL import Image, ImageSequence
@@ -23,7 +22,7 @@ from ..core.sprite import Sprite
 
 def export_gif(
     sprite: Sprite,
-    path: Union[str, Path],
+    path: str | Path,
     *,
     loop: int = 0,
 ) -> None:
@@ -70,7 +69,7 @@ def export_gif(
     )
 
 
-def import_gif(path: Union[str, Path]) -> Sprite:
+def import_gif(path: str | Path) -> Sprite:
     """Import an animated GIF as a multi-frame Sprite.
 
     Each GIF frame becomes a frame on a single ``"Background"`` layer.

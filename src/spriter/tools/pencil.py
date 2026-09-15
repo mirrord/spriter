@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-from typing import List, Optional, Tuple
-
 from ..utils.geometry import line_points
 from .base import Tool
 
 
-def _remove_l_corners(points: List[Tuple[int, int]]) -> List[Tuple[int, int]]:
+def _remove_l_corners(points: list[tuple[int, int]]) -> list[tuple[int, int]]:
     """Remove pixels that form L-shaped junctions from a stroke.
 
     For each consecutive triple (A, B, C) where A→B is a diagonal and B→C is
@@ -50,7 +48,7 @@ class PencilTool(Tool):
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
-        self._last: Optional[Tuple[int, int]] = None
+        self._last: tuple[int, int] | None = None
         self.pixel_perfect: bool = False
 
     def on_press(self, x: int, y: int) -> None:

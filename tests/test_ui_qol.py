@@ -13,13 +13,7 @@ Features tested:
 
 from __future__ import annotations
 
-import tempfile
-from pathlib import Path
-from typing import List, Tuple
 from unittest.mock import MagicMock, patch
-
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -62,8 +56,8 @@ class TestColorPickerSwap:
         cp.foreground = (10, 20, 30, 255)
         cp.background = (40, 50, 60, 255)
 
-        fg_received: List[Tuple] = []
-        bg_received: List[Tuple] = []
+        fg_received: list[tuple] = []
+        bg_received: list[tuple] = []
         cp.foreground_changed.connect(fg_received.append)
         cp.background_changed.connect(bg_received.append)
 
@@ -244,10 +238,10 @@ class TestOnionSkinDepth:
 
 class TestTimelineContextMenu:
     def test_right_click_emits_signal(self, qapp):
-        from spriter.ui.timeline import _FrameCell
-        from PyQt6.QtCore import Qt, QPoint
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
-        from PyQt6.QtCore import QPointF
+
+        from spriter.ui.timeline import _FrameCell
 
         cell = _FrameCell(2, 100)
         received = []
@@ -267,9 +261,10 @@ class TestTimelineContextMenu:
         assert received[0][0] == 2
 
     def test_left_click_does_not_emit_right_clicked(self, qapp):
-        from spriter.ui.timeline import _FrameCell
-        from PyQt6.QtCore import Qt, QPointF
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
+
+        from spriter.ui.timeline import _FrameCell
 
         cell = _FrameCell(0, 100)
         right_received = []
@@ -288,8 +283,8 @@ class TestTimelineContextMenu:
         assert right_received == []
 
     def test_context_menu_sets_active_frame(self, qapp):
-        from spriter.ui.timeline import TimelinePanel
         from spriter.commands.base import CommandStack
+        from spriter.ui.timeline import TimelinePanel
 
         sprite = _make_sprite(frames=3)
         stack = CommandStack()
@@ -306,14 +301,14 @@ class TestTimelineContextMenu:
         assert panel._active_frame == 2
 
     def test_context_menu_has_expected_actions(self, qapp):
-        from spriter.ui.timeline import TimelinePanel
         from spriter.commands.base import CommandStack
+        from spriter.ui.timeline import TimelinePanel
 
         sprite = _make_sprite(frames=2)
         stack = CommandStack()
         panel = TimelinePanel(sprite, stack)
 
-        action_labels: List[str] = []
+        action_labels: list[str] = []
 
         with patch("spriter.ui.timeline.QMenu") as MockMenu:
             mock_menu = MagicMock()
@@ -380,8 +375,8 @@ class TestColorPickerLoadPalette:
 
 class TestPaletteImportExport:
     def test_import_palette_jasc(self, qapp, tmp_path):
-        from spriter.ui.main_window import MainWindow
         from spriter.core.palette import Palette
+        from spriter.ui.main_window import MainWindow
 
         pal = Palette([(255, 0, 0, 255), (0, 255, 0, 255), (0, 0, 255, 255)])
         pal_path = str(tmp_path / "test.pal")
@@ -401,8 +396,8 @@ class TestPaletteImportExport:
         win.close()
 
     def test_import_palette_gpl(self, qapp, tmp_path):
-        from spriter.ui.main_window import MainWindow
         from spriter.core.palette import Palette
+        from spriter.ui.main_window import MainWindow
 
         pal = Palette([(128, 64, 32, 255), (16, 32, 64, 255)])
         pal_path = str(tmp_path / "test.gpl")
@@ -421,8 +416,8 @@ class TestPaletteImportExport:
         win.close()
 
     def test_export_palette_jasc_roundtrip(self, qapp, tmp_path):
-        from spriter.ui.main_window import MainWindow
         from spriter.core.palette import Palette
+        from spriter.ui.main_window import MainWindow
 
         win = MainWindow()
         win._unsaved = False
@@ -445,8 +440,8 @@ class TestPaletteImportExport:
         win.close()
 
     def test_export_palette_hex_roundtrip(self, qapp, tmp_path):
-        from spriter.ui.main_window import MainWindow
         from spriter.core.palette import Palette
+        from spriter.ui.main_window import MainWindow
 
         win = MainWindow()
         win._unsaved = False

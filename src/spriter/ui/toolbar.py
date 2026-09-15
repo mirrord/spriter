@@ -13,8 +13,6 @@ canonical name (e.g. ``"pencil"``).
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
@@ -61,10 +59,10 @@ class ToolBar(QWidget):
     opacity_changed = pyqtSignal(int)
     tolerance_changed = pyqtSignal(int)
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._current_tool: str = "pencil"
-        self._buttons: Dict[str, QToolButton] = {}
+        self._buttons: dict[str, QToolButton] = {}
         self._button_group = QButtonGroup(self)
         self._button_group.setExclusive(True)
 

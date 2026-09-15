@@ -10,18 +10,16 @@ by ``(layer_index, frame_index)`` pairs.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
-
 import numpy as np
 
-from .animation import Animation
+from .animation import Animation, AnimationTimeline
 from .frame import Cel, Frame
 from .layer import BlendMode, Layer
 
 # Color modes (extensible for future indexed-color support).
 ColorMode = str  # "RGBA" is the only mode for Phase 1
 
-CelKey = Tuple[int, int]  # (layer_index, frame_index)
+CelKey = tuple[int, int]  # (layer_index, frame_index)
 
 
 class Sprite:
@@ -47,23 +45,165 @@ class Sprite:
         self.width = width
         self.height = height
         self.color_mode = color_mode
-        self._layers: List[Layer] = []
-        self._frames: List[Frame] = []
-        self._cels: Dict[CelKey, Cel] = {}
-        self.selection_mask: Optional[np.ndarray] = None  # bool (H, W) or None
-        self.animation: Animation = Animation()
+        self._layers: list[Layer] = []
+        self._timelines: list[AnimationTimeline] = [AnimationTimeline("Animation 1")]
+        self._active_timeline: int = 0
+        self.selection_mask: np.ndarray | None = None  # bool (H, W) or None
+
+    # ------------------------------------------------------------------
+    # Timeline (animation) management
+    # ------------------------------------------------------------------
+
+    @property
+    def timelines(self) -> list[AnimationTimeline]:
+        """Ordered list of animation timelines (copy)."""
+        return list(self._timelines)
+
+    @property
+    def timeline_count(self) -> int:
+        return len(self._timelines)
+
+    @property
+    def active_timeline_index(self) -> int:
+        """Index of the currently displayed animation timeline."""
+        return self._active_timeline
+
+    @property
+    def active_timeline(self) -> AnimationTimeline:
+        """The currently displayed :class:`AnimationTimeline`."""
+        return self._timelines[self._active_timeline]
+
+    @property
+    def _frames(self) -> list[Frame]:
+        """Frame list of the active timeline (delegated)."""
+        return self._timelines[self._active_timeline]._frames
+
+    @_frames.setter
+    def _frames(self, value: list[Frame]) -> None:
+        self._timelines[self._active_timeline]._frames = value
+
+    @property
+    def _cels(self) -> dict[CelKey, Cel]:
+        """Cel map of the active timeline (delegated)."""
+        return self._timelines[self._active_timeline]._cels
+
+    @_cels.setter
+    def _cels(self, value: dict[CelKey, Cel]) -> None:
+        self._timelines[self._active_timeline]._cels = value
+
+    @property
+    def animation(self) -> Animation:
+        """Playback settings of the active timeline (delegated)."""
+        return self._timelines[self._active_timeline].animation
+
+    @animation.setter
+    def animation(self, value: Animation) -> None:
+        self._timelines[self._active_timeline].animation = value
+
+    def set_active_timeline(self, index: int) -> None:
+        """Switch the displayed animation to *index*.
+
+        Args:
+            index: Timeline index to activate.
+
+        Raises:
+            IndexError: If *index* is out of range.
+        """
+        if not (0 <= index < len(self._timelines)):
+            raise IndexError(
+                f"Timeline index {index} out of range (0–{len(self._timelines) - 1})"
+            )
+        self._active_timeline = index
+
+    def add_timeline(
+        self,
+        name: str | None = None,
+        *,
+        index: int | None = None,
+    ) -> AnimationTimeline:
+        """Create a new animation timeline with a single blank frame.
+
+        The new timeline shares the sprite's layers and canvas size; it starts
+        with one frame and blank cels for every existing layer.
+
+        Args:
+            name: Display name; a unique default is generated when omitted.
+            index: Position to insert at; appends if None.
+
+        Returns:
+            The newly created :class:`AnimationTimeline`.
+        """
+        timeline = AnimationTimeline(name or self._next_timeline_name())
+        timeline._frames.append(Frame())
+        for layer_idx in range(len(self._layers)):
+            timeline._cels[(layer_idx, 0)] = Cel(self._blank_pixels())
+        if index is None:
+            self._timelines.append(timeline)
+        else:
+            index = max(0, min(len(self._timelines), index))
+            self._timelines.insert(index, timeline)
+        return timeline
+
+    def remove_timeline(self, index: int) -> AnimationTimeline:
+        """Remove and return the timeline at *index*.
+
+        Args:
+            index: Timeline index to remove.
+
+        Returns:
+            The removed :class:`AnimationTimeline`.
+
+        Raises:
+            ValueError: If it is the only remaining timeline.
+            IndexError: If *index* is out of range.
+        """
+        if not (0 <= index < len(self._timelines)):
+            raise IndexError(
+                f"Timeline index {index} out of range (0–{len(self._timelines) - 1})"
+            )
+        if len(self._timelines) <= 1:
+            raise ValueError("Cannot remove the last remaining timeline.")
+        timeline = self._timelines.pop(index)
+        self._active_timeline = min(self._active_timeline, len(self._timelines) - 1)
+        return timeline
+
+    def insert_timeline(self, index: int, timeline: AnimationTimeline) -> None:
+        """Insert an existing *timeline* at *index* (used by undo)."""
+        index = max(0, min(len(self._timelines), index))
+        self._timelines.insert(index, timeline)
+
+    def rename_timeline(self, index: int, name: str) -> None:
+        """Rename the timeline at *index*.
+
+        Args:
+            index: Timeline index.
+            name: New display name.
+        """
+        if not (0 <= index < len(self._timelines)):
+            raise IndexError(
+                f"Timeline index {index} out of range (0–{len(self._timelines) - 1})"
+            )
+        self._timelines[index].name = name
+
+    def _next_timeline_name(self) -> str:
+        """Return a unique default timeline name like ``"Animation 3"``."""
+        existing = {tl.name for tl in self._timelines}
+        i = len(self._timelines) + 1
+        while f"Animation {i}" in existing:
+            i += 1
+        return f"Animation {i}"
 
     # ------------------------------------------------------------------
     # Properties
     # ------------------------------------------------------------------
 
     @property
-    def layers(self) -> List[Layer]:
+    def layers(self) -> list[Layer]:
         """Ordered list of layers (bottom to top)."""
         return list(self._layers)
 
     @property
-    def frames(self) -> List[Frame]:
+    def frames(self) -> list[Frame]:
         """Ordered list of animation frames."""
         return list(self._frames)
 
@@ -83,7 +223,7 @@ class Sprite:
         self,
         name: str = "Layer",
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
         visible: bool = True,
         locked: bool = False,
         opacity: int = 255,
@@ -113,10 +253,11 @@ class Sprite:
             self._layers.append(layer)
         else:
             self._layers.insert(self._clamp_layer_index(index), layer)
-        # Blank transparent cels for all existing frames.
+        # Blank transparent cels for all existing frames, in every timeline.
         layer_idx = self._layers.index(layer)
-        for frame_idx in range(len(self._frames)):
-            self._cels[(layer_idx, frame_idx)] = Cel(self._blank_pixels())
+        for timeline in self._timelines:
+            for frame_idx in range(len(timeline._frames)):
+                timeline._cels[(layer_idx, frame_idx)] = Cel(self._blank_pixels())
         return layer
 
     def remove_layer(self, index: int) -> Layer:
@@ -130,14 +271,16 @@ class Sprite:
         """
         self._validate_layer_index(index)
         layer = self._layers.pop(index)
-        # Remove cels for the removed layer and re-index higher-layer cels.
-        new_cels: Dict[CelKey, Cel] = {}
-        for (li, fi), cel in self._cels.items():
-            if li == index:
-                continue
-            new_li = li if li < index else li - 1
-            new_cels[(new_li, fi)] = cel
-        self._cels = new_cels
+        # Remove cels for the removed layer and re-index higher-layer cels,
+        # in every timeline.
+        for timeline in self._timelines:
+            new_cels: dict[CelKey, Cel] = {}
+            for (li, fi), cel in timeline._cels.items():
+                if li == index:
+                    continue
+                new_li = li if li < index else li - 1
+                new_cels[(new_li, fi)] = cel
+            timeline._cels = new_cels
         return layer
 
     def move_layer(self, from_index: int, to_index: int) -> None:
@@ -153,12 +296,13 @@ class Sprite:
             return
         layer = self._layers.pop(from_index)
         self._layers.insert(to_index, layer)
-        # Rebuild cel keys to reflect new order.
-        new_cels: Dict[CelKey, Cel] = {}
-        for (li, fi), cel in self._cels.items():
-            new_li = _reindex(li, from_index, to_index)
-            new_cels[(new_li, fi)] = cel
-        self._cels = new_cels
+        # Rebuild cel keys to reflect new order, in every timeline.
+        for timeline in self._timelines:
+            new_cels: dict[CelKey, Cel] = {}
+            for (li, fi), cel in timeline._cels.items():
+                new_li = _reindex(li, from_index, to_index)
+                new_cels[(new_li, fi)] = cel
+            timeline._cels = new_cels
 
     # ------------------------------------------------------------------
     # Frame management
@@ -168,7 +312,7 @@ class Sprite:
         self,
         duration_ms: int = 100,
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
     ) -> Frame:
         """Create a new frame and insert it into the timeline.
 
@@ -187,7 +331,7 @@ class Sprite:
         frame_idx = self._frames.index(frame)
         # Shift existing cels at frame_idx and beyond up by one to make room.
         if frame_idx < len(self._frames) - 1:
-            new_cels: Dict[CelKey, Cel] = {}
+            new_cels: dict[CelKey, Cel] = {}
             for (li, fi), cel in self._cels.items():
                 new_fi = fi if fi < frame_idx else fi + 1
                 new_cels[(li, new_fi)] = cel
@@ -208,7 +352,7 @@ class Sprite:
         """
         self._validate_frame_index(index)
         frame = self._frames.pop(index)
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             if fi == index:
                 continue
@@ -230,7 +374,7 @@ class Sprite:
             return
         frame_obj = self._frames.pop(from_index)
         self._frames.insert(to_index, frame_obj)
-        new_cels: Dict[CelKey, Cel] = {}
+        new_cels: dict[CelKey, Cel] = {}
         for (li, fi), cel in self._cels.items():
             new_fi = _reindex(fi, from_index, to_index)
             new_cels[(li, new_fi)] = cel
@@ -400,27 +544,28 @@ class Sprite:
                 f"Canvas size must be positive, got {new_width}x{new_height}"
             )
         old_w, old_h = self.width, self.height
-        new_cels: Dict[CelKey, Cel] = {}
-        for key, cel in self._cels.items():
-            if cel.pixels is None:
-                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
-            else:
-                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
-                # Region of old pixels that lands in the new canvas.
-                src_x1 = max(0, -offset_x)
-                src_y1 = max(0, -offset_y)
-                src_x2 = min(old_w, new_width - offset_x)
-                src_y2 = min(old_h, new_height - offset_y)
-                dst_x1 = src_x1 + offset_x
-                dst_y1 = src_y1 + offset_y
-                dst_x2 = src_x2 + offset_x
-                dst_y2 = src_y2 + offset_y
-                if src_x2 > src_x1 and src_y2 > src_y1:
-                    new_buf[dst_y1:dst_y2, dst_x1:dst_x2] = cel.pixels[
-                        src_y1:src_y2, src_x1:src_x2
-                    ]
-            new_cels[key] = Cel(new_buf)
-        self._cels = new_cels
+        for timeline in self._timelines:
+            new_cels: dict[CelKey, Cel] = {}
+            for key, cel in timeline._cels.items():
+                if cel.pixels is None:
+                    new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+                else:
+                    new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+                    # Region of old pixels that lands in the new canvas.
+                    src_x1 = max(0, -offset_x)
+                    src_y1 = max(0, -offset_y)
+                    src_x2 = min(old_w, new_width - offset_x)
+                    src_y2 = min(old_h, new_height - offset_y)
+                    dst_x1 = src_x1 + offset_x
+                    dst_y1 = src_y1 + offset_y
+                    dst_x2 = src_x2 + offset_x
+                    dst_y2 = src_y2 + offset_y
+                    if src_x2 > src_x1 and src_y2 > src_y1:
+                        new_buf[dst_y1:dst_y2, dst_x1:dst_x2] = cel.pixels[
+                            src_y1:src_y2, src_x1:src_x2
+                        ]
+                new_cels[key] = Cel(new_buf)
+            timeline._cels = new_cels
         self.width = new_width
         self.height = new_height
 
@@ -455,16 +600,17 @@ class Sprite:
             if method == "nearest"
             else _PILImage.Resampling.BILINEAR
         )
-        new_cels: Dict[CelKey, Cel] = {}
-        for key, cel in self._cels.items():
-            if cel.pixels is None:
-                new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
-            else:
-                pil_img = _PILImage.fromarray(cel.pixels, mode="RGBA")
-                pil_img = pil_img.resize((new_width, new_height), resample)
-                new_buf = np.array(pil_img, dtype=np.uint8)
-            new_cels[key] = Cel(new_buf)
-        self._cels = new_cels
+        for timeline in self._timelines:
+            new_cels: dict[CelKey, Cel] = {}
+            for key, cel in timeline._cels.items():
+                if cel.pixels is None:
+                    new_buf = np.zeros((new_height, new_width, 4), dtype=np.uint8)
+                else:
+                    pil_img = _PILImage.fromarray(cel.pixels, mode="RGBA")
+                    pil_img = pil_img.resize((new_width, new_height), resample)
+                    new_buf = np.array(pil_img, dtype=np.uint8)
+                new_cels[key] = Cel(new_buf)
+            timeline._cels = new_cels
         self.width = new_width
         self.height = new_height
 

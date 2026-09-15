@@ -9,8 +9,6 @@ A *Cel* is the pixel-data intersection of one Layer and one Frame.
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 
 
@@ -26,9 +24,9 @@ class Cel:
 
     def __init__(
         self,
-        pixels: Optional[np.ndarray] = None,
+        pixels: np.ndarray | None = None,
         *,
-        linked_frame: Optional[int] = None,
+        linked_frame: int | None = None,
     ) -> None:
         if pixels is not None:
             if pixels.ndim != 3 or pixels.shape[2] != 4:
@@ -49,12 +47,12 @@ class Cel:
         return self.linked_frame is not None
 
     @property
-    def pixels(self) -> Optional[np.ndarray]:
+    def pixels(self) -> np.ndarray | None:
         """The raw pixel buffer (may be None for empty cels)."""
         return self._pixels
 
     @pixels.setter
-    def pixels(self, value: Optional[np.ndarray]) -> None:
+    def pixels(self, value: np.ndarray | None) -> None:
         if value is not None:
             if value.ndim != 3 or value.shape[2] != 4:
                 raise ValueError("pixels must be an (H, W, 4) uint8 array")

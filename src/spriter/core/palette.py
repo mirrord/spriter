@@ -11,10 +11,10 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import List, Sequence, Tuple, Union
+from typing import Sequence
 
 # A color is stored as a 4-tuple (R, G, B, A) with values 0–255.
-Color = Tuple[int, int, int, int]
+Color = tuple[int, int, int, int]
 
 _MAX_COLORS = 256
 
@@ -30,8 +30,8 @@ class Palette:
         colors: Initial list of (R, G, B, A) tuples.
     """
 
-    def __init__(self, colors: Optional[Sequence[Color]] = None) -> None:  # type: ignore[name-defined]
-        self._colors: List[Color] = []
+    def __init__(self, colors: Sequence[Color] | None = None) -> None:  # type: ignore[name-defined]
+        self._colors: list[Color] = []
         if colors:
             for c in colors:
                 self.add(c)
@@ -89,7 +89,7 @@ class Palette:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_jasc(cls, path: Union[str, Path]) -> "Palette":
+    def from_jasc(cls, path: str | Path) -> Palette:
         """Load a JASC-PAL palette file.
 
         Args:
@@ -106,7 +106,7 @@ class Palette:
         ):
             raise ValueError("Not a valid JASC-PAL file")
         count = int(lines[2].strip())
-        colors: List[Color] = []
+        colors: list[Color] = []
         for line in lines[3 : 3 + count]:
             parts = line.strip().split()
             if len(parts) < 3:
@@ -115,7 +115,7 @@ class Palette:
             colors.append((_clamp(r), _clamp(g), _clamp(b), 255))
         return cls(colors)
 
-    def to_jasc(self, path: Union[str, Path]) -> None:
+    def to_jasc(self, path: str | Path) -> None:
         """Save palette as JASC-PAL format.
 
         Args:
@@ -131,7 +131,7 @@ class Palette:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_gpl(cls, path: Union[str, Path]) -> "Palette":
+    def from_gpl(cls, path: str | Path) -> Palette:
         """Load a GIMP GPL palette file.
 
         Args:
@@ -143,15 +143,10 @@ class Palette:
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
         if not lines or not lines[0].startswith("GIMP Palette"):
             raise ValueError("Not a valid GIMP GPL file")
-        colors: List[Color] = []
+        colors: list[Color] = []
         for line in lines[1:]:
             line = line.strip()
-            if (
-                not line
-                or line.startswith("#")
-                or line.startswith("Name:")
-                or line.startswith("Columns:")
-            ):
+            if not line or line.startswith(("#", "Name:", "Columns:")):
                 continue
             parts = line.split()
             if len(parts) < 3:
@@ -163,7 +158,7 @@ class Palette:
                 continue
         return cls(colors)
 
-    def to_gpl(self, path: Union[str, Path], name: str = "Spriter Palette") -> None:
+    def to_gpl(self, path: str | Path, name: str = "Spriter Palette") -> None:
         """Save palette as GIMP GPL format.
 
         Args:
@@ -173,7 +168,7 @@ class Palette:
         lines = [
             "GIMP Palette",
             f"Name: {name}",
-            f"Columns: 16",
+            "Columns: 16",
             "#",
         ]
         for i, (r, g, b, _a) in enumerate(self._colors):
@@ -186,7 +181,7 @@ class Palette:
     # ------------------------------------------------------------------
 
     @classmethod
-    def from_hex_list(cls, path: Union[str, Path]) -> "Palette":
+    def from_hex_list(cls, path: str | Path) -> Palette:
         """Load a newline-separated hex color list (e.g. ``FF0000`` or ``#FF0000``).
 
         Args:
@@ -196,10 +191,10 @@ class Palette:
             A new Palette instance.
         """
         lines = Path(path).read_text(encoding="utf-8", errors="replace").splitlines()
-        colors: List[Color] = []
+        colors: list[Color] = []
         for line in lines:
             line = line.strip().lstrip("#")
-            if not line or line.startswith(";") or line.startswith("//"):
+            if not line or line.startswith((";", "//")):
                 continue
             # Accept RRGGBB or RRGGBBAA
             match = re.fullmatch(r"([0-9a-fA-F]{6})([0-9a-fA-F]{2})?", line)
@@ -212,7 +207,7 @@ class Palette:
             colors.append((_clamp(r), _clamp(g), _clamp(b), _clamp(a)))
         return cls(colors)
 
-    def to_hex_list(self, path: Union[str, Path]) -> None:
+    def to_hex_list(self, path: str | Path) -> None:
         """Save palette as a newline-separated hex list (RRGGBBAA).
 
         Args:
@@ -239,7 +234,7 @@ def _validate_color(color: Color) -> Color:
     return color  # type: ignore[return-value]
 
 
-def _rgb_to_hsv(r: int, g: int, b: int) -> Tuple[float, float, float]:
+def _rgb_to_hsv(r: int, g: int, b: int) -> tuple[float, float, float]:
     """Return (hue 0–360, saturation 0–1, value 0–1)."""
     rf, gf, bf = r / 255.0, g / 255.0, b / 255.0
     cmax = max(rf, gf, bf)
@@ -256,6 +251,3 @@ def _rgb_to_hsv(r: int, g: int, b: int) -> Tuple[float, float, float]:
     s = 0.0 if cmax == 0 else delta / cmax
     v = cmax
     return h, s, v
-
-
-from typing import Optional  # noqa: E402 (needed for forward reference in __init__)

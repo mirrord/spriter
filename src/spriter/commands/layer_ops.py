@@ -18,15 +18,12 @@ Commands
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 import numpy as np
 
 from ..commands.base import Command
 from ..core.frame import Cel
 from ..core.layer import BlendMode, Layer
 from ..core.sprite import Sprite
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -45,33 +42,48 @@ def _copy_cel(cel: Cel) -> Cel:
 def _shift_cel_layers_up(
     sprite: Sprite,
     from_index: int,
-    extra_cels: Optional[Dict[int, Cel]] = None,
-    extra_index: Optional[int] = None,
+    extra_cels_by_tl: dict[int, dict[int, Cel]] | None = None,
+    extra_index: int | None = None,
 ) -> None:
-    """Shift all layer indices >= *from_index* up by one in ``_cels``.
+    """Shift layer indices >= *from_index* up by one, in every timeline.
 
-    Optionally inserts *extra_cels* (keyed by frame index) at *extra_index*.
+    Optionally inserts *extra_cels_by_tl* (``{timeline_idx: {frame_idx: Cel}}``)
+    at *extra_index* for the matching timeline.
     """
-    new_cels = {}
-    for (li, fi), cel in sprite._cels.items():  # type: ignore[attr-defined]
-        new_li = li if li < from_index else li + 1
-        new_cels[(new_li, fi)] = cel
-    if extra_cels is not None and extra_index is not None:
-        for fi, cel in extra_cels.items():
-            new_cels[(extra_index, fi)] = cel
-    sprite._cels = new_cels  # type: ignore[attr-defined]
+    for ti, timeline in enumerate(sprite._timelines):  # type: ignore[attr-defined]
+        new_cels: dict[tuple[int, int], Cel] = {}
+        for (li, fi), cel in timeline._cels.items():
+            new_li = li if li < from_index else li + 1
+            new_cels[(new_li, fi)] = cel
+        if extra_cels_by_tl is not None and extra_index is not None:
+            for fi, cel in extra_cels_by_tl.get(ti, {}).items():
+                new_cels[(extra_index, fi)] = cel
+        timeline._cels = new_cels
 
 
 def _shift_cel_layers_down(sprite: Sprite, removed_index: int) -> None:
-    """Shift all layer indices > *removed_index* down by one in ``_cels``,
+    """Shift layer indices > *removed_index* down by one in every timeline,
     discarding any cels at exactly *removed_index*."""
-    new_cels = {}
-    for (li, fi), cel in sprite._cels.items():  # type: ignore[attr-defined]
-        if li == removed_index:
-            continue
-        new_li = li if li < removed_index else li - 1
-        new_cels[(new_li, fi)] = cel
-    sprite._cels = new_cels  # type: ignore[attr-defined]
+    for timeline in sprite._timelines:  # type: ignore[attr-defined]
+        new_cels: dict[tuple[int, int], Cel] = {}
+        for (li, fi), cel in timeline._cels.items():
+            if li == removed_index:
+                continue
+            new_li = li if li < removed_index else li - 1
+            new_cels[(new_li, fi)] = cel
+        timeline._cels = new_cels
+
+
+def _snapshot_layer_cels(sprite: Sprite, layer_index: int) -> dict[int, dict[int, Cel]]:
+    """Copy every timeline's cels for *layer_index*, keyed by timeline then frame."""
+    result: dict[int, dict[int, Cel]] = {}
+    for ti, timeline in enumerate(sprite._timelines):  # type: ignore[attr-defined]
+        result[ti] = {
+            fi: _copy_cel(cel)
+            for fi in range(len(timeline._frames))
+            if (cel := timeline._cels.get((layer_index, fi))) is not None
+        }
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -97,7 +109,7 @@ class AddLayerCommand(Command):
         sprite: Sprite,
         name: str = "Layer",
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
         visible: bool = True,
         locked: bool = False,
         opacity: int = 255,
@@ -110,7 +122,7 @@ class AddLayerCommand(Command):
         self._locked = locked
         self._opacity = opacity
         self._blend_mode = blend_mode
-        self._actual_index: Optional[int] = None
+        self._actual_index: int | None = None
 
     @property
     def description(self) -> str:
@@ -148,13 +160,12 @@ class RemoveLayerCommand(Command):
     def __init__(self, sprite: Sprite, layer_index: int) -> None:
         self._sprite = sprite
         self._index = layer_index
-        # Snapshot the layer object and its cels before execution.
+        # Snapshot the layer object and its cels (across all timelines) before
+        # execution.
         self._layer: Layer = sprite._layers[layer_index]  # type: ignore[attr-defined]
-        self._cels: Dict[int, Cel] = {
-            fi: _copy_cel(cel)
-            for fi in range(sprite.frame_count)
-            if (cel := sprite._cels.get((layer_index, fi))) is not None  # type: ignore[attr-defined]
-        }
+        self._cels_by_tl: dict[int, dict[int, Cel]] = _snapshot_layer_cels(
+            sprite, layer_index
+        )
 
     @property
     def description(self) -> str:
@@ -164,12 +175,12 @@ class RemoveLayerCommand(Command):
         self._sprite.remove_layer(self._index)
 
     def undo(self) -> None:
-        # Shift existing cel layer-indices >= _index up by 1, then inject
-        # the saved cels at _index.
+        # Shift existing cel layer-indices >= _index up by 1 in every timeline,
+        # then inject the saved cels at _index.
         _shift_cel_layers_up(
             self._sprite,
             self._index,
-            extra_cels=self._cels,
+            extra_cels_by_tl=self._cels_by_tl,
             extra_index=self._index,
         )
         self._sprite._layers.insert(self._index, self._layer)  # type: ignore[attr-defined]
@@ -211,11 +222,12 @@ class DuplicateLayerCommand(Command):
         _shift_cel_layers_up(self._sprite, self._new_index)
         self._sprite._layers.insert(self._new_index, new_layer)  # type: ignore[attr-defined]
 
-        # Copy source cels to the new layer slot.
-        for fi in range(self._sprite.frame_count):
-            src_cel = self._sprite._cels.get((self._source_index, fi))  # type: ignore[attr-defined]
-            if src_cel is not None:
-                self._sprite._cels[(self._new_index, fi)] = _copy_cel(src_cel)  # type: ignore[attr-defined]
+        # Copy source cels to the new layer slot, in every timeline.
+        for timeline in self._sprite._timelines:  # type: ignore[attr-defined]
+            for fi in range(len(timeline._frames)):
+                src_cel = timeline._cels.get((self._source_index, fi))
+                if src_cel is not None:
+                    timeline._cels[(self._new_index, fi)] = _copy_cel(src_cel)
 
     def undo(self) -> None:
         _shift_cel_layers_down(self._sprite, self._new_index)
@@ -276,18 +288,14 @@ class MergeLayerDownCommand(Command):
         self._top_index = layer_index
         self._bottom_index = layer_index - 1
 
-        # Snapshot both layers' cels before execution.
+        # Snapshot both layers' cels (across all timelines) before execution.
         self._top_layer: Layer = sprite._layers[layer_index]  # type: ignore[attr-defined]
-        self._top_cels: Dict[int, Cel] = {
-            fi: _copy_cel(cel)
-            for fi in range(sprite.frame_count)
-            if (cel := sprite._cels.get((layer_index, fi))) is not None  # type: ignore[attr-defined]
-        }
-        self._bottom_cels_before: Dict[int, Cel] = {
-            fi: _copy_cel(cel)
-            for fi in range(sprite.frame_count)
-            if (cel := sprite._cels.get((layer_index - 1, fi))) is not None  # type: ignore[attr-defined]
-        }
+        self._top_cels_by_tl: dict[int, dict[int, Cel]] = _snapshot_layer_cels(
+            sprite, layer_index
+        )
+        self._bottom_cels_by_tl: dict[int, dict[int, Cel]] = _snapshot_layer_cels(
+            sprite, layer_index - 1
+        )
 
     @property
     def description(self) -> str:
@@ -298,52 +306,56 @@ class MergeLayerDownCommand(Command):
 
         top_layer = self._sprite._layers[self._top_index]  # type: ignore[attr-defined]
         alpha_scale = top_layer.opacity / 255.0
+        saved_active = self._sprite.active_timeline_index
 
-        for fi in range(self._sprite.frame_count):
-            top_cel = self._sprite._cels.get((self._top_index, fi))  # type: ignore[attr-defined]
-            bot_cel = self._sprite._cels.get((self._bottom_index, fi))  # type: ignore[attr-defined]
+        for ti in range(self._sprite.timeline_count):
+            self._sprite.set_active_timeline(ti)
+            for fi in range(self._sprite.frame_count):
+                top_cel = self._sprite._cels.get((self._top_index, fi))  # type: ignore[attr-defined]
+                bot_cel = self._sprite._cels.get((self._bottom_index, fi))  # type: ignore[attr-defined]
 
-            # Start with the bottom layer's pixels (or transparent).
-            if bot_cel is not None and bot_cel.pixels is not None:
-                dst = bot_cel.pixels.astype(np.float32)
-            else:
-                dst = np.zeros(
-                    (self._sprite.height, self._sprite.width, 4), dtype=np.float32
-                )
-
-            if top_cel is not None and top_cel.pixels is not None:
-                src = top_cel.pixels.astype(np.float32)
-                src_rgb_norm = src[..., :3] / 255.0
-                src_a = (src[..., 3] / 255.0) * alpha_scale
-
-                dst_rgb_norm = dst[..., :3] / 255.0
-                dst_a = dst[..., 3] / 255.0
-
-                blended_rgb = _blend_rgb(
-                    src_rgb_norm, dst_rgb_norm, top_layer.blend_mode
-                )
-                out_a = src_a + dst_a * (1.0 - src_a)
-                safe_out_a = np.where(out_a > 0.0, out_a, 1.0)
-
-                merged = np.empty(
-                    (self._sprite.height, self._sprite.width, 4), dtype=np.float32
-                )
-                for ch in range(3):
-                    merged[..., ch] = (
-                        (
-                            blended_rgb[..., ch] * src_a
-                            + dst_rgb_norm[..., ch] * dst_a * (1.0 - src_a)
-                        )
-                        / safe_out_a
-                        * 255.0
+                # Start with the bottom layer's pixels (or transparent).
+                if bot_cel is not None and bot_cel.pixels is not None:
+                    dst = bot_cel.pixels.astype(np.float32)
+                else:
+                    dst = np.zeros(
+                        (self._sprite.height, self._sprite.width, 4), dtype=np.float32
                     )
-                merged[..., 3] = out_a * 255.0
-                dst = merged
 
-            result = np.clip(dst, 0, 255).astype(np.uint8)
-            self._sprite.set_cel_pixels(self._bottom_index, fi, result)
+                if top_cel is not None and top_cel.pixels is not None:
+                    src = top_cel.pixels.astype(np.float32)
+                    src_rgb_norm = src[..., :3] / 255.0
+                    src_a = (src[..., 3] / 255.0) * alpha_scale
 
-        # Remove the top layer.
+                    dst_rgb_norm = dst[..., :3] / 255.0
+                    dst_a = dst[..., 3] / 255.0
+
+                    blended_rgb = _blend_rgb(
+                        src_rgb_norm, dst_rgb_norm, top_layer.blend_mode
+                    )
+                    out_a = src_a + dst_a * (1.0 - src_a)
+                    safe_out_a = np.where(out_a > 0.0, out_a, 1.0)
+
+                    merged = np.empty(
+                        (self._sprite.height, self._sprite.width, 4), dtype=np.float32
+                    )
+                    for ch in range(3):
+                        merged[..., ch] = (
+                            (
+                                blended_rgb[..., ch] * src_a
+                                + dst_rgb_norm[..., ch] * dst_a * (1.0 - src_a)
+                            )
+                            / safe_out_a
+                            * 255.0
+                        )
+                    merged[..., 3] = out_a * 255.0
+                    dst = merged
+
+                result = np.clip(dst, 0, 255).astype(np.uint8)
+                self._sprite.set_cel_pixels(self._bottom_index, fi, result)
+
+        self._sprite.set_active_timeline(saved_active)
+        # Remove the top layer (fans out across all timelines).
         self._sprite.remove_layer(self._top_index)
 
     def undo(self) -> None:
@@ -351,14 +363,16 @@ class MergeLayerDownCommand(Command):
         _shift_cel_layers_up(
             self._sprite,
             self._top_index,
-            extra_cels=self._top_cels,
+            extra_cels_by_tl=self._top_cels_by_tl,
             extra_index=self._top_index,
         )
         # Step 2: re-insert the top layer object.
         self._sprite._layers.insert(self._top_index, self._top_layer)  # type: ignore[attr-defined]
-        # Step 3: restore the bottom layer's pre-merge cels.
-        for fi, cel in self._bottom_cels_before.items():
-            self._sprite._cels[(self._bottom_index, fi)] = cel  # type: ignore[attr-defined]
+        # Step 3: restore the bottom layer's pre-merge cels in every timeline.
+        for ti, cels in self._bottom_cels_by_tl.items():
+            timeline = self._sprite._timelines[ti]  # type: ignore[attr-defined]
+            for fi, cel in cels.items():
+                timeline._cels[(self._bottom_index, fi)] = cel
 
 
 # ---------------------------------------------------------------------------
@@ -378,11 +392,11 @@ class FlattenCommand(Command):
 
     def __init__(self, sprite: Sprite) -> None:
         self._sprite = sprite
-        # Snapshot all layers and cels for undo.
+        # Snapshot all layers and cels (every timeline) for undo.
         self._saved_layers: list = list(sprite._layers)  # type: ignore[attr-defined]
-        self._saved_cels: Dict[tuple, Cel] = {
-            key: _copy_cel(cel)
-            for key, cel in sprite._cels.items()  # type: ignore[attr-defined]
+        self._saved_cels_by_tl: dict[int, dict[tuple, Cel]] = {
+            ti: {key: _copy_cel(cel) for key, cel in timeline._cels.items()}
+            for ti, timeline in enumerate(sprite._timelines)  # type: ignore[attr-defined]
         }
 
     @property
@@ -392,13 +406,20 @@ class FlattenCommand(Command):
     def execute(self) -> None:
         from ..core.compositor import composite_frame
 
-        # Composite each frame into a merged cel.
-        merged: Dict[int, Cel] = {}
-        for fi in range(self._sprite.frame_count):
-            pixels = composite_frame(self._sprite, fi)
-            merged[fi] = Cel(pixels)
+        saved_active = self._sprite.active_timeline_index
 
-        # Replace layers with a single "Merged" layer.
+        # Composite each timeline's frames while the layers are still intact.
+        merged_by_tl: dict[int, dict[int, Cel]] = {}
+        for ti in range(self._sprite.timeline_count):
+            self._sprite.set_active_timeline(ti)
+            merged_by_tl[ti] = {
+                fi: Cel(composite_frame(self._sprite, fi))
+                for fi in range(self._sprite.frame_count)
+            }
+        self._sprite.set_active_timeline(saved_active)
+
+        # Replace the shared layer stack with a single "Merged" layer, then
+        # store the merged cels in every timeline.
         new_layer = Layer(
             "Merged",
             visible=True,
@@ -407,10 +428,12 @@ class FlattenCommand(Command):
             blend_mode=BlendMode.NORMAL,
         )
         self._sprite._layers = [new_layer]  # type: ignore[attr-defined]
-        self._sprite._cels = {(0, fi): cel for fi, cel in merged.items()}  # type: ignore[attr-defined]
+        for ti, timeline in enumerate(self._sprite._timelines):  # type: ignore[attr-defined]
+            timeline._cels = {(0, fi): cel for fi, cel in merged_by_tl[ti].items()}
 
     def undo(self) -> None:
         self._sprite._layers = list(self._saved_layers)  # type: ignore[attr-defined]
-        self._sprite._cels = {  # type: ignore[attr-defined]
-            key: _copy_cel(cel) for key, cel in self._saved_cels.items()
-        }
+        for ti, timeline in enumerate(self._sprite._timelines):  # type: ignore[attr-defined]
+            timeline._cels = {
+                key: _copy_cel(cel) for key, cel in self._saved_cels_by_tl[ti].items()
+            }

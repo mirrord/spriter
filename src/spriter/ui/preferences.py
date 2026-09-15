@@ -26,16 +26,11 @@ Usage::
 
 from __future__ import annotations
 
-from typing import Dict
-
-from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
-    QLabel,
     QLineEdit,
     QSpinBox,
     QTabWidget,
@@ -140,7 +135,7 @@ class PreferencesDialog(QDialog):
         w = QWidget()
         form = QFormLayout(w)
 
-        self._shortcut_edits: Dict[str, QLineEdit] = {}
+        self._shortcut_edits: dict[str, QLineEdit] = {}
         for tool, key in self._settings.keybindings.items():
             edit = QLineEdit(key)
             edit.setMaxLength(1)

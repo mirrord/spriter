@@ -19,10 +19,9 @@ the stack, and every command push invalidates the canvas cache.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Optional
 
 from PyQt6.QtCore import Qt, QTimer, QUrl
-from PyQt6.QtGui import QAction, QKeySequence, QIcon, QPixmap
+from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QDialog,
@@ -43,38 +42,14 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from spriter.__about__ import __version__
+
 from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
     DuplicateFrameCommand,
     RemoveFrameCommand,
 )
-from ..commands.layer_ops import (
-    AddLayerCommand,
-    DuplicateLayerCommand,
-    FlattenCommand,
-    MergeLayerDownCommand,
-    RemoveLayerCommand,
-)
-from ..core.palette import Palette
-from ..core.settings import Settings
-from ..core.sprite import Sprite
-from ..io.gif_io import export_gif, import_gif
-from ..io.png_io import export_all_frames, export_frame, import_png
-from ..io.project_io import load as load_project
-from ..io.project_io import save as save_project
-from ..io.spritesheet import SheetLayout, export_atlas, export_sheet, import_sheet
-from ..tools.ellipse import EllipseTool
-from ..tools.eraser import EraserTool
-from ..tools.eyedropper import EyedropperTool
-from ..tools.fill import FillTool
-from ..tools.contiguous_delete import ContiguousDeleteTool
-from ..tools.line import LineTool
-from ..tools.move import MoveTool
-from ..tools.pencil import PencilTool
-from ..tools.rectangle import RectangleTool
-from ..tools.select import RectSelectTool
-from ..tools.text import TextTool
 from ..commands.transform import (
     AdjustmentCommand,
     AutocropCommand,
@@ -90,6 +65,30 @@ from ..commands.transform import (
     ShiftCommand,
 )
 from ..core.animation import LoopMode
+from ..core.palette import Palette
+from ..core.settings import Settings
+from ..core.sprite import Sprite
+from ..io.gif_io import export_gif, import_gif
+from ..io.png_io import export_all_frames, export_frame, import_png
+from ..io.project_io import load as load_project
+from ..io.project_io import save as save_project
+from ..io.spritesheet import (
+    export_atlas,
+    export_sheet,
+    import_sheet,
+    import_sheet_auto,
+)
+from ..tools.contiguous_delete import ContiguousDeleteTool
+from ..tools.ellipse import EllipseTool
+from ..tools.eraser import EraserTool
+from ..tools.eyedropper import EyedropperTool
+from ..tools.fill import FillTool
+from ..tools.line import LineTool
+from ..tools.move import MoveTool
+from ..tools.pencil import PencilTool
+from ..tools.rectangle import RectangleTool
+from ..tools.select import RectSelectTool
+from ..tools.text import TextTool
 from .canvas import CanvasWidget
 from .color_picker import ColorPicker
 from .layers_panel import LayersPanel
@@ -108,7 +107,7 @@ class MainWindow(QMainWindow):
     Creating a :class:`MainWindow` automatically opens a new 32×32 sprite.
     """
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setWindowTitle("Spriter")
         self.resize(1200, 800)
@@ -118,10 +117,10 @@ class MainWindow(QMainWindow):
         _pix.loadFromData(SPRITE_ICO_BYTES)
         self.setWindowIcon(QIcon(_pix))
 
-        self._sprite: Optional[Sprite] = None
+        self._sprite: Sprite | None = None
         self._settings: Settings = Settings.load()
         self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-        self._current_path: Optional[Path] = None
+        self._current_path: Path | None = None
         self._unsaved = False
 
         # Autosave timer
@@ -130,12 +129,12 @@ class MainWindow(QMainWindow):
         self._reset_autosave_timer()
 
         # Widgets (created after the sprite is set up)
-        self._canvas: Optional[CanvasWidget] = None
-        self._toolbar: Optional[ToolBar] = None
-        self._color_picker: Optional[ColorPicker] = None
-        self._layers_panel: Optional[LayersPanel] = None
-        self._timeline: Optional[TimelinePanel] = None
-        self._preview: Optional[PreviewWindow] = None
+        self._canvas: CanvasWidget | None = None
+        self._toolbar: ToolBar | None = None
+        self._color_picker: ColorPicker | None = None
+        self._layers_panel: LayersPanel | None = None
+        self._timeline: TimelinePanel | None = None
+        self._preview: PreviewWindow | None = None
 
         # Status-bar labels
         self._status_cursor = QLabel("0, 0")
@@ -177,7 +176,7 @@ class MainWindow(QMainWindow):
         self._rebuild_ui()
         self._status_canvas.setText(f"{width}×{height}")
 
-    def open_project(self, path: Optional[str] = None) -> None:
+    def open_project(self, path: str | None = None) -> None:
         """Load a .spriter project file.
 
         Args:
@@ -329,6 +328,7 @@ class MainWindow(QMainWindow):
         self._timeline.frame_duration_changed.connect(
             lambda fi, ms: self._canvas.invalidate_cache()
         )
+        self._timeline.animation_changed.connect(self._on_animation_changed)
         timeline_dock = QDockWidget("Timeline", self)
         timeline_dock.setWidget(self._timeline)
         timeline_dock.setObjectName("timeline_dock")
@@ -518,7 +518,7 @@ class MainWindow(QMainWindow):
         menu,
         text: str,
         slot,
-        shortcut: Optional[str] = None,
+        shortcut: str | None = None,
         checkable: bool = False,
     ) -> QAction:
         action = QAction(text, self)
@@ -809,6 +809,19 @@ class MainWindow(QMainWindow):
             if self._canvas._tool:
                 self._canvas._tool.frame_index = frame_index
 
+    def _on_animation_changed(self, timeline_index: int) -> None:
+        """Handle the active animation timeline changing in the timeline panel."""
+        if self._sprite is None:
+            return
+        if self._canvas:
+            self._canvas.active_frame = 0
+            self._canvas.invalidate_cache()
+            if self._canvas._tool:
+                self._canvas._tool.frame_index = 0
+            self._canvas.update()
+        if self._preview is not None:
+            self._preview.set_sprite(self._sprite)
+
     # ------------------------------------------------------------------
     # Animation menu actions
     # ------------------------------------------------------------------
@@ -1042,7 +1055,7 @@ class MainWindow(QMainWindow):
         old_color, new_color = dlg.color_pair()
         tolerance = dlg.tolerance()
         targets = self._scope_targets(dlg.scope())
-        li_active, fi_active = self._active_layer_frame()
+        _li_active, _fi_active = self._active_layer_frame()
         cmds = [
             ReplaceColorCommand(
                 self._sprite, li, fi, old_color, new_color, tolerance=tolerance
@@ -1128,12 +1141,12 @@ class MainWindow(QMainWindow):
         if scope == "active":
             return [(li, fi)]
         if scope == "frame":
-            return [(l, fi) for l in range(self._sprite.layer_count)]
+            return [(layer_idx, fi) for layer_idx in range(self._sprite.layer_count)]
         if scope == "all":
             return [
-                (l, f)
-                for f in range(self._sprite.frame_count)
-                for l in range(self._sprite.layer_count)
+                (layer_idx, frame_idx)
+                for frame_idx in range(self._sprite.frame_count)
+                for layer_idx in range(self._sprite.layer_count)
             ]
         return [(li, fi)]
 
@@ -1163,7 +1176,7 @@ class MainWindow(QMainWindow):
         QMessageBox.about(
             self,
             "About Spriter",
-            "Spriter \u2014 Pixel art editor\n\nPhases 1-8 implemented.",
+            "Spriter \u2014 Pixel art editor\n\nVersion " + __version__,
         )
 
     # ------------------------------------------------------------------
@@ -1261,9 +1274,9 @@ class MainWindow(QMainWindow):
         self._remember_path(path, "save")
         fi = self._canvas.active_frame if self._canvas else 0
         try:
-            from ..core.compositor import composite_frame
             from PIL import Image
-            import numpy as np
+
+            from ..core.compositor import composite_frame
 
             composite = composite_frame(self._sprite, fi)
             img = Image.fromarray(composite, mode="RGBA")
@@ -1333,6 +1346,44 @@ class MainWindow(QMainWindow):
         if not path:
             return
         self._remember_path(path, "open")
+        # Multi-row sheets can be split so each row becomes its own animation.
+        split_rows = (
+            QMessageBox.question(
+                self,
+                "Import Sheet",
+                "Does each row contain a separate animation?\n\n"
+                "Choose Yes to split each row into its own animation timeline; "
+                "choose No to import all frames as a single animation.",
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+        # Sheets with irregular frame spacing use contour-based auto-detection
+        # instead of a fixed grid.
+        inconsistent = (
+            QMessageBox.question(
+                self,
+                "Import Sheet",
+                "Does this sheet have inconsistent spacing between frames?\n\n"
+                "Choose Yes to auto-detect each frame and centre it in a "
+                "uniform cell; choose No to slice on a fixed grid.",
+            )
+            == QMessageBox.StandardButton.Yes
+        )
+        if inconsistent:
+            try:
+                sprite = import_sheet_auto(path, split_rows=split_rows)
+            except Exception as exc:
+                QMessageBox.critical(self, "Import Error", str(exc))
+                return
+            self._maybe_handle_background(sprite, path)
+            self._sprite = sprite
+            self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+            self._current_path = None
+            self._unsaved = True
+            self._rebuild_ui()
+            w, h = sprite.width, sprite.height
+            self._status_canvas.setText(f"{w}\u00d7{h}")
+            return
         # Best-effort dimension estimation to pre-populate the dialogs.
         est_w, est_h, est_pad = 16, 16, 0
         try:
@@ -1358,10 +1409,11 @@ class MainWindow(QMainWindow):
         if not ok3:
             return
         try:
-            sprite = import_sheet(path, fw, fh, padding=pad)
+            sprite = import_sheet(path, fw, fh, padding=pad, split_rows=split_rows)
         except Exception as exc:
             QMessageBox.critical(self, "Import Error", str(exc))
             return
+        self._maybe_handle_background(sprite, path)
         self._sprite = sprite
         self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
         self._current_path = None
@@ -1369,6 +1421,43 @@ class MainWindow(QMainWindow):
         self._rebuild_ui()
         w, h = sprite.width, sprite.height
         self._status_canvas.setText(f"{w}\u00d7{h}")
+
+    def _maybe_handle_background(self, sprite: Sprite, source_path: str) -> None:
+        """Detect a sheet background colour and prompt the user how to handle it."""
+        from ..io.spritesheet import (
+            detect_background_color,
+            remove_background,
+            split_background,
+        )
+
+        try:
+            color = detect_background_color(source_path)
+        except Exception:
+            color = None
+        if color is None:
+            return
+        r, g, b, _a = color
+        options = [
+            "Remove background (make transparent)",
+            "Separate background & foreground layers",
+            "Import as-is",
+        ]
+        choice, ok = QInputDialog.getItem(
+            self,
+            "Background Detected",
+            f"A background colour (RGB {r}, {g}, {b}) was detected.\n"
+            "How would you like to handle it?",
+            options,
+            0,
+            False,
+        )
+        if not ok:
+            return
+        if choice == options[0]:
+            remove_background(sprite, color)
+        elif choice == options[1]:
+            split_background(sprite, color)
+        # options[2] ("Import as-is") leaves the sprite unchanged.
 
     # ------------------------------------------------------------------
     # Palette import / export
@@ -1437,12 +1526,12 @@ class MainWindow(QMainWindow):
         """Copy the active cel (or selection) to the clipboard as a PNG image."""
         if self._sprite is None:
             return
-        from PyQt6.QtGui import QClipboard, QImage
-        from PyQt6.QtWidgets import QApplication
-        from ..core.compositor import composite_frame
+
         import numpy as np
-        from io import BytesIO
-        from PIL import Image
+        from PyQt6.QtGui import QImage
+        from PyQt6.QtWidgets import QApplication
+
+        from ..core.compositor import composite_frame
 
         fi = self._canvas.active_frame if self._canvas else 0
         composite = composite_frame(self._sprite, fi)
@@ -1462,8 +1551,8 @@ class MainWindow(QMainWindow):
         """Paste clipboard image onto the active layer / frame."""
         if self._sprite is None:
             return
-        from PyQt6.QtWidgets import QApplication
         import numpy as np
+        from PyQt6.QtWidgets import QApplication
 
         qi = QApplication.clipboard().image()
         if qi.isNull():
@@ -1751,7 +1840,7 @@ class _ReplaceColorDialog(QDialog):
         fg: tuple,
         bg: tuple,
         sprite: Sprite,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self.setWindowTitle("Replace Color")

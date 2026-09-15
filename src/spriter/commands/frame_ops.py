@@ -13,12 +13,9 @@ Commands
 
 from __future__ import annotations
 
-from typing import Dict, Optional
-
 from ..commands.base import Command
 from ..core.frame import Cel, Frame
 from ..core.sprite import Sprite
-
 
 # ---------------------------------------------------------------------------
 # Internal helpers
@@ -36,8 +33,8 @@ def _copy_cel(cel: Cel) -> Cel:
 def _shift_cel_frames_up(
     sprite: Sprite,
     from_index: int,
-    extra_cels: Optional[Dict[int, Cel]] = None,
-    extra_index: Optional[int] = None,
+    extra_cels: dict[int, Cel] | None = None,
+    extra_index: int | None = None,
 ) -> None:
     """Shift all frame indices >= *from_index* up by one in ``_cels``."""
     new_cels = {}
@@ -69,12 +66,12 @@ class AddFrameCommand(Command):
         sprite: Sprite,
         duration_ms: int = 100,
         *,
-        index: Optional[int] = None,
+        index: int | None = None,
     ) -> None:
         self._sprite = sprite
         self._duration = duration_ms
         self._index = index
-        self._actual_index: Optional[int] = None
+        self._actual_index: int | None = None
 
     @property
     def description(self) -> str:
@@ -107,7 +104,7 @@ class RemoveFrameCommand(Command):
         self._index = frame_index
         # Snapshot the frame object and all its cels.
         self._frame: Frame = sprite._frames[frame_index]  # type: ignore[attr-defined]
-        self._cels: Dict[int, Cel] = {
+        self._cels: dict[int, Cel] = {
             li: _copy_cel(cel)
             for li in range(sprite.layer_count)
             if (cel := sprite._cels.get((li, frame_index))) is not None  # type: ignore[attr-defined]

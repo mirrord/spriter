@@ -16,8 +16,6 @@ Controls
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QColor, QImage, QPainter
@@ -35,9 +33,9 @@ from ..core.sprite import Sprite
 class _PreviewCanvas(QWidget):
     """Inner widget that renders the composited frame image."""
 
-    def __init__(self, parent: Optional[QWidget] = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
-        self._image: Optional[QImage] = None
+        self._image: QImage | None = None
         self._zoom: int = 2
         self.setMinimumSize(32, 32)
 
@@ -85,7 +83,7 @@ class PreviewWindow(QWidget):
     def __init__(
         self,
         sprite: Sprite,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent, Qt.WindowType.Tool)
         self.setWindowTitle("Preview")

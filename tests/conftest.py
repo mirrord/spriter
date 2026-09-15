@@ -4,7 +4,7 @@
 """Shared pytest fixtures for all test modules.
 
 Sets up a session-scoped :class:`~PyQt6.QtWidgets.QApplication` so that widget
-tests (Phases 3/4) can instantiate UI components without a visible display.
+tests can instantiate UI components without a visible display.
 ``QT_QPA_PLATFORM=offscreen`` is applied before any Qt code is imported so that
 running under headless environments (CI, virtualised) works without a real
 X/Wayland/Win32 display server.

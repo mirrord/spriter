@@ -21,8 +21,6 @@ Below the list: opacity QSlider, blend mode QComboBox, and Add / Delete
 
 from __future__ import annotations
 
-from typing import Optional
-
 import numpy as np
 from PyQt6.QtCore import QSize, Qt, pyqtSignal
 from PyQt6.QtGui import QColor, QIcon, QImage, QPixmap
@@ -167,7 +165,7 @@ class LayersPanel(QWidget):
         self,
         sprite: Sprite,
         stack: CommandStack,
-        parent: Optional[QWidget] = None,
+        parent: QWidget | None = None,
     ) -> None:
         super().__init__(parent)
         self._sprite = sprite
@@ -263,7 +261,9 @@ class LayersPanel(QWidget):
             role_tag = (
                 " [FG]"
                 if layer.role == LayerRole.FOREGROUND
-                else " [BG]" if layer.role == LayerRole.BACKGROUND else ""
+                else " [BG]"
+                if layer.role == LayerRole.BACKGROUND
+                else ""
             )
             item = QListWidgetItem(icon, f"{eye} {lock}  {layer.name}{role_tag}")
             item.setData(Qt.ItemDataRole.UserRole, li)  # store actual layer index
@@ -355,7 +355,7 @@ class LayersPanel(QWidget):
         self.layers_modified.emit()
 
     # ------------------------------------------------------------------
-    # List interactions
+    # list interactions
     # ------------------------------------------------------------------
 
     def _on_row_changed(self, row: int) -> None:

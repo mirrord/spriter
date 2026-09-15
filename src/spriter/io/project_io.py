@@ -6,9 +6,12 @@
 A ``.spriter`` file is a **JSON** document that contains:
 
 * Sprite metadata (canvas size, color mode, format version).
-* Layer metadata list (name, visibility, blend mode, opacity).
-* Frame metadata list (duration).
-* Cel pixel data: one Base64-encoded PNG per (layer, frame) pair.
+* Layer metadata list (name, visibility, blend mode, opacity) — shared across
+  all animation timelines.
+* One or more animation timelines (format version 2+), each with its own name,
+  loop mode, FPS, frame list, and cel pixel data (one Base64-encoded PNG per
+  (layer, frame) pair). Version 1 files (a single top-level frame/cel list) are
+  still readable and are loaded as one timeline named "Animation 1".
 
 Autosave files are written next to the project path with an ``~`` suffix
 (e.g. ``my_sprite.spriter~``) and are automatically removed on a successful
@@ -33,19 +36,20 @@ import base64
 import io
 import json
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any
 
 import numpy as np
 from PIL import Image
 
+from ..core.animation import Animation, AnimationTimeline, LoopMode
 from ..core.frame import Cel, Frame
 from ..core.layer import BlendMode, Layer
 from ..core.sprite import Sprite
 
-_FORMAT_VERSION = 1
+_FORMAT_VERSION = 2
 
 
-def save(sprite: Sprite, path: Union[str, Path]) -> None:
+def save(sprite: Sprite, path: str | Path) -> None:
     """Save *sprite* as a ``.spriter`` project file.
 
     The file is first written to a temporary ``~``-suffixed path so that any
@@ -70,7 +74,7 @@ def save(sprite: Sprite, path: Union[str, Path]) -> None:
         raise
 
 
-def load(path: Union[str, Path]) -> Sprite:
+def load(path: str | Path) -> Sprite:
     """Load a ``.spriter`` project file and return a :class:`~spriter.core.sprite.Sprite`.
 
     Args:
@@ -88,7 +92,7 @@ def load(path: Union[str, Path]) -> Sprite:
     return _dict_to_sprite(data)
 
 
-def autosave(sprite: Sprite, path: Union[str, Path]) -> Path:
+def autosave(sprite: Sprite, path: str | Path) -> Path:
     """Write a recovery copy of *sprite* next to *path*.
 
     The autosave file is named ``<stem>.spriter~``.  Calling :func:`save`
@@ -116,14 +120,30 @@ def autosave(sprite: Sprite, path: Union[str, Path]) -> Path:
 # ---------------------------------------------------------------------------
 
 
-def _sprite_to_dict(sprite: Sprite) -> Dict[str, Any]:
+def _sprite_to_dict(sprite: Sprite) -> dict[str, Any]:
     layers_data = [_layer_to_dict(layer) for layer in sprite.layers]
-    frames_data = [_frame_to_dict(frame) for frame in sprite.frames]
+    timelines_data = [
+        _timeline_to_dict(timeline, sprite.layer_count) for timeline in sprite.timelines
+    ]
 
-    cels_data: Dict[str, str] = {}
-    for li in range(sprite.layer_count):
-        for fi in range(sprite.frame_count):
-            cel = sprite._cels.get((li, fi))
+    return {
+        "version": _FORMAT_VERSION,
+        "width": sprite.width,
+        "height": sprite.height,
+        "color_mode": sprite.color_mode,
+        "layers": layers_data,
+        "active_timeline": sprite.active_timeline_index,
+        "timelines": timelines_data,
+    }
+
+
+def _timeline_to_dict(timeline: AnimationTimeline, layer_count: int) -> dict[str, Any]:
+    frames_data = [_frame_to_dict(frame) for frame in timeline._frames]
+
+    cels_data: dict[str, str] = {}
+    for li in range(layer_count):
+        for fi in range(len(timeline._frames)):
+            cel = timeline._cels.get((li, fi))
             if cel is None:
                 continue
             key = f"{li},{fi}"
@@ -134,22 +154,20 @@ def _sprite_to_dict(sprite: Sprite) -> Dict[str, Any]:
             # Empty cels are omitted to keep file size small.
 
     return {
-        "version": _FORMAT_VERSION,
-        "width": sprite.width,
-        "height": sprite.height,
-        "color_mode": sprite.color_mode,
-        "layers": layers_data,
+        "name": timeline.name,
+        "loop_mode": timeline.animation.loop_mode.value,
+        "default_fps": timeline.animation.default_fps,
         "frames": frames_data,
         "cels": cels_data,
     }
 
 
-def _dict_to_sprite(data: Dict[str, Any]) -> Sprite:
+def _dict_to_sprite(data: dict[str, Any]) -> Sprite:
     version = int(data.get("version", 1))
-    if version != _FORMAT_VERSION:
+    if version > _FORMAT_VERSION:
         raise ValueError(
             f"Unsupported .spriter format version {version}. "
-            f"Expected version {_FORMAT_VERSION}."
+            f"Expected version {_FORMAT_VERSION} or lower."
         )
 
     sprite = Sprite(
@@ -168,24 +186,56 @@ def _dict_to_sprite(data: Dict[str, Any]) -> Sprite:
         )
         sprite._layers.append(layer)
 
+    if version >= 2 and "timelines" in data:
+        timelines = [_dict_to_timeline(td) for td in data["timelines"]]
+        if timelines:
+            sprite._timelines = timelines
+            sprite._active_timeline = min(
+                int(data.get("active_timeline", 0)), len(timelines) - 1
+            )
+    else:
+        # Version 1: a single timeline stored as top-level frames + cels.
+        timeline = _dict_to_timeline(
+            {
+                "name": "Animation 1",
+                "frames": data.get("frames", []),
+                "cels": data.get("cels", {}),
+            }
+        )
+        sprite._timelines = [timeline]
+        sprite._active_timeline = 0
+
+    return sprite
+
+
+def _dict_to_timeline(data: dict[str, Any]) -> AnimationTimeline:
+    animation = Animation(
+        default_fps=int(data.get("default_fps", 12)),
+        loop_mode=LoopMode(data.get("loop_mode", "loop")),
+    )
+    timeline = AnimationTimeline(
+        str(data.get("name", "Animation 1")), animation=animation
+    )
+
     for frame_data in data.get("frames", []):
-        frame = Frame(duration_ms=int(frame_data.get("duration_ms", 100)))
-        sprite._frames.append(frame)
+        timeline._frames.append(
+            Frame(duration_ms=int(frame_data.get("duration_ms", 100)))
+        )
 
     for key_str, cel_value in data.get("cels", {}).items():
         li, fi = (int(i) for i in key_str.split(","))
         # Detect linked-cel JSON vs raw base64 PNG.
         if cel_value.startswith("{"):
             cel_meta = json.loads(cel_value)
-            sprite._cels[(li, fi)] = Cel(linked_frame=int(cel_meta["linked_frame"]))
+            timeline._cels[(li, fi)] = Cel(linked_frame=int(cel_meta["linked_frame"]))
         else:
             pixels = _b64png_to_pixels(cel_value)
-            sprite._cels[(li, fi)] = Cel(pixels)
+            timeline._cels[(li, fi)] = Cel(pixels)
 
-    return sprite
+    return timeline
 
 
-def _layer_to_dict(layer: Layer) -> Dict[str, Any]:
+def _layer_to_dict(layer: Layer) -> dict[str, Any]:
     return {
         "name": layer.name,
         "visible": layer.visible,
@@ -195,7 +245,7 @@ def _layer_to_dict(layer: Layer) -> Dict[str, Any]:
     }
 
 
-def _frame_to_dict(frame: Frame) -> Dict[str, Any]:
+def _frame_to_dict(frame: Frame) -> dict[str, Any]:
     return {"duration_ms": frame.duration_ms}
 
 

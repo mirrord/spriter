@@ -12,12 +12,6 @@ Features tested:
 
 from __future__ import annotations
 
-from typing import List, Tuple
-from unittest.mock import MagicMock, patch
-
-import pytest
-
-
 # ===========================================================================
 # Phase A: Palette import/export in File menu
 # ===========================================================================
@@ -44,9 +38,9 @@ class TestPaletteMenuWiring:
         win = MainWindow()
         win._unsaved = False
         texts = self._get_submenu_actions(win, "Import")
-        assert any(
-            "Palette" in t for t in texts
-        ), f"No 'Palette' action in Import menu. Found: {texts}"
+        assert any("Palette" in t for t in texts), (
+            f"No 'Palette' action in Import menu. Found: {texts}"
+        )
         win.close()
 
     def test_export_menu_has_palette_action(self, qapp):
@@ -55,9 +49,9 @@ class TestPaletteMenuWiring:
         win = MainWindow()
         win._unsaved = False
         texts = self._get_submenu_actions(win, "Export")
-        assert any(
-            "Palette" in t for t in texts
-        ), f"No 'Palette' action in Export menu. Found: {texts}"
+        assert any("Palette" in t for t in texts), (
+            f"No 'Palette' action in Export menu. Found: {texts}"
+        )
         win.close()
 
 
@@ -68,16 +62,15 @@ class TestPaletteMenuWiring:
 
 class TestHueStrip:
     def test_hue_strip_emits_hue_changed_on_click(self, qapp):
-        from PyQt6.QtCore import QPoint
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
-        from PyQt6.QtCore import Qt, QPointF
 
         from spriter.ui.color_picker import _HueStrip
 
         strip = _HueStrip()
         strip.show()
 
-        received: List[int] = []
+        received: list[int] = []
         strip.hue_changed.connect(received.append)
 
         # Click at top → hue near 0
@@ -94,8 +87,7 @@ class TestHueStrip:
         assert 0 <= received[0] <= 359
 
     def test_hue_strip_click_bottom_emits_high_hue(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import _HueStrip
@@ -103,7 +95,7 @@ class TestHueStrip:
         strip = _HueStrip()
         strip.show()
 
-        received: List[int] = []
+        received: list[int] = []
         strip.hue_changed.connect(received.append)
 
         h = strip.height()
@@ -126,8 +118,7 @@ class TestHueStrip:
         assert strip._hue == 180
 
     def test_drag_continues_emitting(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import _HueStrip
@@ -135,7 +126,7 @@ class TestHueStrip:
         strip = _HueStrip()
         strip.show()
 
-        received: List[int] = []
+        received: list[int] = []
         strip.hue_changed.connect(received.append)
 
         h = strip.height()
@@ -154,8 +145,7 @@ class TestHueStrip:
 
 class TestSVSquare:
     def test_sv_square_emits_sv_changed_on_click(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import _SVSquare
@@ -163,7 +153,7 @@ class TestSVSquare:
         sq = _SVSquare()
         sq.show()
 
-        received: List[Tuple[int, int]] = []
+        received: list[tuple[int, int]] = []
         sq.sv_changed.connect(lambda s, v: received.append((s, v)))
 
         # Click at top-right corner → high S, high V
@@ -182,8 +172,7 @@ class TestSVSquare:
         assert v >= 240
 
     def test_sv_square_bottom_left_low_sv(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import _SVSquare
@@ -191,7 +180,7 @@ class TestSVSquare:
         sq = _SVSquare()
         sq.show()
 
-        received: List[Tuple[int, int]] = []
+        received: list[tuple[int, int]] = []
         sq.sv_changed.connect(lambda s, v: received.append((s, v)))
 
         # Click at bottom-left → low S, low V
@@ -234,8 +223,7 @@ class TestGradientPickerIntegration:
         assert hasattr(cp, "_hue_strip")
 
     def test_hue_strip_click_syncs_h_slider(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import ColorPicker
@@ -257,8 +245,7 @@ class TestGradientPickerIntegration:
         assert 100 <= cp._h_slider.value() <= 270
 
     def test_sv_click_syncs_s_v_sliders(self, qapp):
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtCore import Qt
+        from PyQt6.QtCore import QPointF, Qt
         from PyQt6.QtGui import QMouseEvent
 
         from spriter.ui.color_picker import ColorPicker
@@ -342,7 +329,7 @@ class TestRecentColors:
         color = (100, 150, 200, 255)
         cp.push_recent(color)
 
-        received: List[Tuple] = []
+        received: list[tuple] = []
         cp.foreground_changed.connect(received.append)
 
         cp._recent_buttons[0].click()
@@ -391,7 +378,7 @@ class TestPaletteButtonContextMenu:
         from spriter.ui.color_picker import _PaletteButton
 
         btn = _PaletteButton(0, (255, 0, 0, 255))
-        received: List[int] = []
+        received: list[int] = []
         btn.set_color_requested.connect(received.append)
         btn.set_color_requested.emit(0)
         assert received == [0]
@@ -400,7 +387,7 @@ class TestPaletteButtonContextMenu:
         from spriter.ui.color_picker import _PaletteButton
 
         btn = _PaletteButton(0, (255, 0, 0, 255))
-        received: List[int] = []
+        received: list[int] = []
         btn.delete_requested.connect(received.append)
         btn.delete_requested.emit(0)
         assert received == [0]
@@ -429,7 +416,6 @@ class TestPaletteButtonContextMenu:
         assert len(cp._palette_colors) == initial_len - 1
 
     def test_context_menu_actions_contain_expected_labels(self, qapp):
-        from PyQt6.QtCore import QPoint
 
         from spriter.ui.color_picker import _PaletteButton
 
@@ -439,12 +425,12 @@ class TestPaletteButtonContextMenu:
         # Build the menu and inspect it without actually showing it
         menu = btn._build_context_menu()
         action_texts = [a.text() for a in menu.actions()]
-        assert any(
-            "Set" in t for t in action_texts
-        ), f"Expected 'Set' action, got {action_texts}"
-        assert any(
-            "Delete" in t for t in action_texts
-        ), f"Expected 'Delete' action, got {action_texts}"
+        assert any("Set" in t for t in action_texts), (
+            f"Expected 'Set' action, got {action_texts}"
+        )
+        assert any("Delete" in t for t in action_texts), (
+            f"Expected 'Delete' action, got {action_texts}"
+        )
 
     def test_set_color_via_signal_chain(self, qapp):
         """Clicking 'Set to Foreground Color' in the menu fires the right signal."""
@@ -453,7 +439,7 @@ class TestPaletteButtonContextMenu:
         cp = ColorPicker()
         cp.foreground = (42, 43, 44, 255)
 
-        received: List[int] = []
+        received: list[int] = []
         cp._palette_buttons[2].set_color_requested.connect(received.append)
         cp._palette_buttons[2].set_color_requested.emit(2)
 

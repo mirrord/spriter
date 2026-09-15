@@ -32,7 +32,6 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from enum import Enum
-from typing import Optional, Tuple
 
 import numpy as np
 
@@ -40,7 +39,7 @@ from ..commands.base import CommandStack
 from ..commands.draw import DrawCelCommand
 from ..core.sprite import Sprite
 
-Color = Tuple[int, int, int, int]
+Color = tuple[int, int, int, int]
 
 
 class BrushShape(Enum):
@@ -73,11 +72,11 @@ class Tool(ABC):
         self.opacity: int = 255
         self.layer_index: int = 0
         self.frame_index: int = 0
-        self._before: Optional[np.ndarray] = None
-        self._working: Optional[np.ndarray] = None
+        self._before: np.ndarray | None = None
+        self._working: np.ndarray | None = None
         # Cached brush mask, invalidated when (size, shape) changes.
-        self._brush_mask_cache: Optional[np.ndarray] = None
-        self._brush_mask_key: Optional[Tuple[int, BrushShape]] = None
+        self._brush_mask_cache: np.ndarray | None = None
+        self._brush_mask_key: tuple[int, BrushShape] | None = None
 
     # ------------------------------------------------------------------
     # Abstract interface
@@ -99,7 +98,7 @@ class Tool(ABC):
     # Preview
     # ------------------------------------------------------------------
 
-    def preview_overlay(self) -> Optional[np.ndarray]:
+    def preview_overlay(self) -> np.ndarray | None:
         """Return the in-progress pixel buffer for live preview.
 
         The returned array shares storage with the tool's working buffer; it
@@ -109,7 +108,7 @@ class Tool(ABC):
         """
         return self._working
 
-    def selection_preview_rect(self) -> Optional[Tuple[int, int, int, int]]:
+    def selection_preview_rect(self) -> tuple[int, int, int, int] | None:
         """Return the in-progress selection rectangle as (x0, y0, x1, y1), or ``None``.
 
         Canvas-space coordinates, normalised so x0 <= x1 and y0 <= y1.

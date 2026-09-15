@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2026-present Dane Howard <mirrord@gmail.com>
 #
 # SPDX-License-Identifier: MIT
-"""Spriter GUI package (Phases 3–8).
+"""Spriter GUI package.
 
 Requires PyQt6 >= 6.4.
 

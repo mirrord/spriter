@@ -3,6 +3,7 @@
 # Build with:  hatch run dist:build
 # Or directly: pyinstaller spriter.spec --noconfirm
 
+import os
 import sys
 from pathlib import Path
 
@@ -88,11 +89,18 @@ a = Analysis(
 
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# PyInstaller rejects --onefile/--onedir CLI flags when a .spec file is given,
+# so onefile mode is selected via env var instead (set by `hatch run dist:build-onefile`).
+onefile = os.environ.get('SPRITER_ONEFILE') == '1'
+
 exe = EXE(
     pyz,
     a.scripts,
+    a.binaries if onefile else [],
+    a.zipfiles if onefile else [],
+    a.datas if onefile else [],
     [],
-    exclude_binaries=True,
+    exclude_binaries=not onefile,
     name='spriter',
     debug=False,
     bootloader_ignore_signals=False,
@@ -106,13 +114,14 @@ exe = EXE(
     icon='assets/sprite.ico',  # Uncomment and supply an icon file to embed one
 )
 
-coll = COLLECT(
-    exe,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
-    strip=False,
-    upx=True,
-    upx_exclude=[],
-    name='spriter',
-)
+if not onefile:
+    coll = COLLECT(
+        exe,
+        a.binaries,
+        a.zipfiles,
+        a.datas,
+        strip=False,
+        upx=True,
+        upx_exclude=[],
+        name='spriter',
+    )

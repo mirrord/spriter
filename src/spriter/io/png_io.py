@@ -13,21 +13,18 @@ Functions
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List, Union
 
 import numpy as np
 from PIL import Image
 
 from ..core.compositor import composite_frame
-from ..core.frame import Cel
-from ..core.layer import Layer
 from ..core.sprite import Sprite
 
 
 def export_frame(
     sprite: Sprite,
     frame_index: int,
-    path: Union[str, Path],
+    path: str | Path,
 ) -> None:
     """Export a single composited frame as a PNG file.
 
@@ -46,9 +43,9 @@ def export_frame(
 
 def export_all_frames(
     sprite: Sprite,
-    dir_path: Union[str, Path],
+    dir_path: str | Path,
     prefix: str = "frame",
-) -> List[Path]:
+) -> list[Path]:
     """Export every frame of *sprite* as individually numbered PNG files.
 
     Files are named ``{prefix}_0000.png``, ``{prefix}_0001.png``, …
@@ -67,7 +64,7 @@ def export_all_frames(
     pad = len(str(sprite.frame_count - 1)) if sprite.frame_count > 1 else 4
     pad = max(pad, 4)
 
-    paths: List[Path] = []
+    paths: list[Path] = []
     for fi in range(sprite.frame_count):
         name = f"{prefix}_{fi:0{pad}d}.png"
         out = dir_path / name
@@ -76,7 +73,7 @@ def export_all_frames(
     return paths
 
 
-def import_png(path: Union[str, Path]) -> Sprite:
+def import_png(path: str | Path) -> Sprite:
     """Import a PNG (or any Pillow-supported format) as a new single-frame Sprite.
 
     The image is placed on a single layer named ``"Background"`` in a 1-frame

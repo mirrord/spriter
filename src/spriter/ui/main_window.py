@@ -1356,12 +1356,18 @@ class MainWindow(QMainWindow):
         from ..core.compositor import composite_frame
 
         li, fi = self._active_layer_frame()
-        init_rgba = composite_frame(self._sprite, fi)
+        # Up to 3 preceding frames (oldest→newest) ending at the current frame.
+        start = max(0, fi - (diffusion.CONTEXT_FRAMES - 1))
+        context_frames = [
+            composite_frame(self._sprite, i) for i in range(start, fi + 1)
+        ]
         canvas_w, canvas_h = self._sprite.width, self._sprite.height
 
         def task():
-            pipeline = diffusion.load_pipeline(model_path)
-            generated = diffusion.generate(pipeline, init_rgba, prompt.strip())
+            pipeline = diffusion.load_inpaint_pipeline(model_path)
+            generated = diffusion.generate_next_frame(
+                pipeline, context_frames, canvas_w, canvas_h, prompt.strip()
+            )
             return prepare_generated_frame(generated, canvas_w, canvas_h)
 
         def on_done(pixels) -> None:

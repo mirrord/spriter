@@ -97,11 +97,13 @@ With the `diffusion` extra installed, the **Diffusion** menu offers:
 - **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
   (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.
 - **Model Info…** — show details about the currently selected model (path, type, size, and whether the optional dependencies are installed).
-- **Generate Next Frame…** — generate a new frame from the current one using
-  image-to-image diffusion. You can supply an optional text prompt to guide the
-  result. The generated image has its flat background keyed out and is uniformly
-  scaled down to fit the canvas, then inserted as a new frame right after the
-  current one (undoable).
+- **Generate Next Frame…** — predict the next frame from the animation so far.
+  The previous three frames are laid out in a row with a fourth masked noise
+  cell, padded to a square, upscaled, and inpainted by the model to fill in the
+  next frame. You can supply an optional text prompt to guide the result. The
+  inpainted frame has its flat background keyed out and is uniformly scaled down
+  to fit the canvas, then inserted as a new frame right after the current one
+  (undoable). A dedicated inpainting checkpoint gives the best results.
 
 Generation runs on the GPU when a CUDA device is available, otherwise on the CPU.
 

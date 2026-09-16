@@ -11,6 +11,9 @@ on :func:`is_available`.
 
 from __future__ import annotations
 
+import json
+import struct
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -108,12 +111,23 @@ def download_model(repo_id: str, dest_dir: str | Path) -> Path:
     return Path(local_path)
 
 
-def load_pipeline(model_path: str | Path) -> Any:
+def load_pipeline(
+    model_path: str | Path, *, disable_safety_checker: bool = True
+) -> Any:
     """Load an image-to-image pipeline from a local model.
+
+    Single-file ``.safetensors`` checkpoints are inspected to detect whether
+    they are Stable Diffusion XL or Stable Diffusion 1.x/2.x, and the matching
+    image-to-image pipeline class is used.  Loading an SDXL checkpoint into the
+    SD1.x pipeline (the previous behaviour) fails with
+    ``argument of type 'NoneType' is not iterable``.
 
     Args:
         model_path: Path to either a diffusers model directory or a single
             ``.safetensors`` checkpoint file.
+        disable_safety_checker: When ``True`` (the default) the Stable Diffusion
+            NSFW safety checker is not loaded.  This avoids frequent false
+            positives on pixel-art content.
 
     Returns:
         A ready-to-run diffusers image-to-image pipeline moved to the best
@@ -132,25 +146,99 @@ def load_pipeline(model_path: str | Path) -> Any:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     dtype = torch.float16 if device == "cuda" else torch.float32
-    if path.is_file() and path.suffix.lower() == ".safetensors":
-        # Single-file checkpoint (e.g. a downloaded Stable Diffusion model).
-        from diffusers import (  # type: ignore[import-not-found]
-            StableDiffusionImg2ImgPipeline,
-        )
+    safety_kwargs: dict[str, Any] = {}
+    if disable_safety_checker:
+        safety_kwargs["safety_checker"] = None
+        safety_kwargs["requires_safety_checker"] = False
 
-        pipeline = StableDiffusionImg2ImgPipeline.from_single_file(
-            str(path), torch_dtype=dtype
-        )
+    if path.is_file() and path.suffix.lower() == ".safetensors":
+        if _is_sdxl_checkpoint(path):
+            # SDXL has no safety checker component; don't pass those kwargs.
+            from diffusers import (  # type: ignore[import-not-found]
+                StableDiffusionXLImg2ImgPipeline,
+            )
+
+            pipeline = StableDiffusionXLImg2ImgPipeline.from_single_file(
+                str(path), torch_dtype=dtype
+            )
+        else:
+            from diffusers import (  # type: ignore[import-not-found]
+                StableDiffusionImg2ImgPipeline,
+            )
+
+            pipeline = StableDiffusionImg2ImgPipeline.from_single_file(
+                str(path), torch_dtype=dtype, **safety_kwargs
+            )
     else:
         from diffusers import (  # type: ignore[import-not-found]
             AutoPipelineForImage2Image,
         )
 
         pipeline = AutoPipelineForImage2Image.from_pretrained(
-            str(path), torch_dtype=dtype
+            str(path), torch_dtype=dtype, **safety_kwargs
         )
-    pipeline = pipeline.to(device)
+    if disable_safety_checker and hasattr(pipeline, "safety_checker"):
+        # Ensure the call-time safety-checker path is fully bypassed.
+        pipeline.safety_checker = None
+    # dtype is already set at load time; suppress the benign fp32-modules advisory
+    # that diffusers emits for the device-placement .to() call (empty module list).
+    with warnings.catch_warnings():
+        warnings.filterwarnings(
+            "ignore",
+            message="There are .* modules in .* that should be kept in float32",
+        )
+        pipeline = pipeline.to(device)
     return pipeline
+
+
+def _read_safetensors_header_keys(path: str | Path) -> list[str]:
+    """Return the tensor names stored in a ``.safetensors`` file header.
+
+    Only the small JSON header is read (8-byte length prefix + JSON), so this
+    is cheap and does not load any tensor data or require ``torch``.
+
+    Args:
+        path: Path to a ``.safetensors`` file.
+
+    Returns:
+        The list of tensor key names (excluding the ``__metadata__`` entry).
+
+    Raises:
+        ValueError: If the file does not look like a valid safetensors file.
+    """
+    with open(path, "rb") as fh:
+        size_bytes = fh.read(8)
+        if len(size_bytes) != 8:
+            raise ValueError("Not a valid safetensors file (truncated header)")
+        (header_size,) = struct.unpack("<Q", size_bytes)
+        header_json = fh.read(header_size)
+    if len(header_json) != header_size:
+        raise ValueError("Not a valid safetensors file (truncated header)")
+    header = json.loads(header_json.decode("utf-8"))
+    return [key for key in header if key != "__metadata__"]
+
+
+def _is_sdxl_checkpoint(path: str | Path) -> bool:
+    """Best-effort detection of a Stable Diffusion XL single-file checkpoint.
+
+    SDXL checkpoints carry a second text encoder under the
+    ``conditioner.embedders.`` namespace and an SDXL UNet ``label_emb`` block,
+    neither of which exist in SD1.x/2.x checkpoints.  Detection failures fall
+    back to ``False`` (treat as SD1.x/2.x), preserving prior behaviour.
+
+    Args:
+        path: Path to a ``.safetensors`` checkpoint.
+
+    Returns:
+        ``True`` when the checkpoint appears to be SDXL.
+    """
+    try:
+        keys = _read_safetensors_header_keys(path)
+    except (OSError, ValueError, json.JSONDecodeError):
+        return False
+    return any(
+        key.startswith("conditioner.embedders.") or ".label_emb." in key for key in keys
+    )
 
 
 def generate(

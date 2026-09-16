@@ -10,6 +10,28 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+
+def _write_safetensors_stub(path, keys):
+    """Write a minimal valid ``.safetensors`` file whose header lists *keys*."""
+    import json
+    import struct
+
+    header = {}
+    offset = 0
+    for key in keys:
+        header[key] = {
+            "dtype": "F16",
+            "shape": [1],
+            "data_offsets": [offset, offset + 2],
+        }
+        offset += 2
+    blob = json.dumps(header).encode("utf-8")
+    with open(path, "wb") as fh:
+        fh.write(struct.pack("<Q", len(blob)))
+        fh.write(blob)
+        fh.write(b"\x00" * offset)
+
+
 # ---------------------------------------------------------------------------
 # Post-processing (pure, no ML dependencies)
 # ---------------------------------------------------------------------------
@@ -218,7 +240,9 @@ class TestDiffusionBackend:
         from spriter.ai import diffusion
 
         model_file = tmp_path / "model.safetensors"
-        model_file.write_bytes(b"x")
+        _write_safetensors_stub(
+            model_file, ["cond_stage_model.transformer.text_model.weight"]
+        )
 
         fake_torch = MagicMock()
         fake_torch.cuda.is_available.return_value = False
@@ -234,6 +258,10 @@ class TestDiffusionBackend:
 
         fake_cls.from_single_file.assert_called_once()
         fake_cls.from_pretrained.assert_not_called()
+        # Safety checker disabled by default to avoid false positives / crashes.
+        _, kwargs = fake_cls.from_single_file.call_args
+        assert kwargs["safety_checker"] is None
+        assert kwargs["requires_safety_checker"] is False
 
     def test_load_pipeline_uses_from_pretrained_for_directory(
         self, tmp_path, monkeypatch
@@ -259,6 +287,101 @@ class TestDiffusionBackend:
 
         fake_cls.from_pretrained.assert_called_once()
         fake_cls.from_single_file.assert_not_called()
+
+    def test_load_pipeline_can_keep_safety_checker(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "model.safetensors"
+        model_file.write_bytes(b"x")
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_cls = MagicMock()
+        fake_diffusers = MagicMock()
+        fake_diffusers.StableDiffusionImg2ImgPipeline = fake_cls
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_pipeline(model_file, disable_safety_checker=False)
+
+        _, kwargs = fake_cls.from_single_file.call_args
+        assert "safety_checker" not in kwargs
+        assert "requires_safety_checker" not in kwargs
+
+    def test_read_safetensors_header_keys(self, tmp_path):
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "m.safetensors"
+        _write_safetensors_stub(model_file, ["a.weight", "b.bias"])
+        keys = diffusion._read_safetensors_header_keys(model_file)
+        assert set(keys) == {"a.weight", "b.bias"}
+
+    def test_is_sdxl_checkpoint_detects_sdxl(self, tmp_path):
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "sdxl.safetensors"
+        _write_safetensors_stub(
+            model_file,
+            [
+                "conditioner.embedders.1.model.token_embedding.weight",
+                "model.diffusion_model.input_blocks.0.0.weight",
+            ],
+        )
+        assert diffusion._is_sdxl_checkpoint(model_file) is True
+
+    def test_is_sdxl_checkpoint_false_for_sd(self, tmp_path):
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "sd.safetensors"
+        _write_safetensors_stub(
+            model_file,
+            [
+                "cond_stage_model.transformer.text_model.embeddings.weight",
+                "model.diffusion_model.input_blocks.0.0.weight",
+            ],
+        )
+        assert diffusion._is_sdxl_checkpoint(model_file) is False
+
+    def test_is_sdxl_checkpoint_false_for_garbage(self, tmp_path):
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "bad.safetensors"
+        model_file.write_bytes(b"x")
+        assert diffusion._is_sdxl_checkpoint(model_file) is False
+
+    def test_load_pipeline_routes_sdxl_checkpoint(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_file = tmp_path / "sdxl.safetensors"
+        _write_safetensors_stub(
+            model_file, ["conditioner.embedders.1.model.token_embedding.weight"]
+        )
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        xl_cls = MagicMock()
+        sd_cls = MagicMock()
+        fake_diffusers = MagicMock()
+        fake_diffusers.StableDiffusionXLImg2ImgPipeline = xl_cls
+        fake_diffusers.StableDiffusionImg2ImgPipeline = sd_cls
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_pipeline(model_file)
+
+        xl_cls.from_single_file.assert_called_once()
+        sd_cls.from_single_file.assert_not_called()
+        # SDXL has no safety checker component, so those kwargs are not passed.
+        _, kwargs = xl_cls.from_single_file.call_args
+        assert "safety_checker" not in kwargs
 
     def test_model_info_for_safetensors_file(self, tmp_path):
         from spriter.ai import diffusion

@@ -93,7 +93,7 @@ main()
 
 With the `diffusion` extra installed, the **Diffusion** menu offers:
 
-- **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file.
+- **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file (Stable Diffusion 1.x/2.x and SDXL are auto-detected).
 - **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
   (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.
 - **Model Info…** — show details about the currently selected model (path, type, size, and whether the optional dependencies are installed).

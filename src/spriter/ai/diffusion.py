@@ -25,6 +25,11 @@ DEFAULT_STRENGTH = 0.6
 DEFAULT_GUIDANCE_SCALE = 7.5
 DEFAULT_STEPS = 30
 
+# Native training resolutions the models expect; running img2img far below these
+# produces incoherent (noisy) output, so the init image is upscaled to match.
+SD_NATIVE_SIZE = 512
+SDXL_NATIVE_SIZE = 1024
+
 
 def is_available() -> bool:
     """Return ``True`` when the diffusion optional dependencies are importable."""
@@ -252,6 +257,11 @@ def generate(
 ) -> np.ndarray:
     """Run image-to-image generation and return the result as an RGBA array.
 
+    The init image is upscaled to the model's native resolution (512 for SD,
+    1024 for SDXL) before generation, since running far below it produces
+    incoherent noise.  The returned image is at that generation resolution;
+    callers are expected to scale it back down to the canvas.
+
     Args:
         pipeline: A diffusers image-to-image pipeline from :func:`load_pipeline`.
         init_rgba: The initialising ``H×W×4`` ``uint8`` RGBA image (the current
@@ -266,6 +276,11 @@ def generate(
         The generated image as an ``H×W×4`` ``uint8`` RGBA array.
     """
     init_image = _rgba_to_rgb_image(init_rgba)
+    # Upscale tiny pixel-art canvases to the model's native resolution; running
+    # far below it yields incoherent noise.
+    target = _target_generation_size(init_image.size, _native_size_for(pipeline))
+    if target != init_image.size:
+        init_image = init_image.resize(target, Image.Resampling.LANCZOS)
     result = pipeline(
         prompt=prompt,
         image=init_image,
@@ -275,6 +290,35 @@ def generate(
     )
     out_image = result.images[0].convert("RGBA")
     return np.array(out_image, dtype=np.uint8)
+
+
+def _native_size_for(pipeline: Any) -> int:
+    """Return the native generation resolution for *pipeline* (SDXL vs SD)."""
+    return SDXL_NATIVE_SIZE if "XL" in type(pipeline).__name__ else SD_NATIVE_SIZE
+
+
+def _target_generation_size(size: tuple[int, int], native: int) -> tuple[int, int]:
+    """Scale *size* so its longer side equals *native*, snapped to multiples of 8.
+
+    Aspect ratio is preserved and each dimension is at least 8.
+
+    Args:
+        size: The ``(width, height)`` of the init image.
+        native: The model's native resolution (e.g. 512 or 1024).
+
+    Returns:
+        The target ``(width, height)`` for generation.
+    """
+    w, h = size
+    longer = max(w, h)
+    if longer <= 0:
+        return (native, native)
+    scale = native / longer
+
+    def snap(value: float) -> int:
+        return max(8, int(round(value * scale / 8)) * 8)
+
+    return (snap(w), snap(h))
 
 
 def _rgba_to_rgb_image(rgba: np.ndarray) -> Image.Image:

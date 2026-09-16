@@ -232,6 +232,59 @@ class TestDiffusionBackend:
         assert kwargs["strength"] == 0.4
         assert out.shape == (32, 32, 4)
 
+    def test_generate_upscales_init_image_to_native(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        fake_img = Image.new("RGB", (32, 32), (0, 128, 255))
+        result = MagicMock()
+        result.images = [fake_img]
+        pipeline = MagicMock(return_value=result)  # class name has no "XL" -> SD
+
+        init = np.zeros((16, 16, 4), dtype=np.uint8)
+        init[..., 3] = 255
+        diffusion.generate(pipeline, init, "hi")
+
+        _, kwargs = pipeline.call_args
+        # 16x16 init upscaled so its longer side is the SD native size (512).
+        assert kwargs["image"].size == (512, 512)
+
+    def test_native_size_for_sd_and_sdxl(self):
+        from spriter.ai import diffusion
+
+        class StableDiffusionImg2ImgPipeline:
+            pass
+
+        class StableDiffusionXLImg2ImgPipeline:
+            pass
+
+        assert (
+            diffusion._native_size_for(StableDiffusionImg2ImgPipeline())
+            == diffusion.SD_NATIVE_SIZE
+        )
+        assert (
+            diffusion._native_size_for(StableDiffusionXLImg2ImgPipeline())
+            == diffusion.SDXL_NATIVE_SIZE
+        )
+
+    def test_target_generation_size_upscales_square(self):
+        from spriter.ai import diffusion
+
+        assert diffusion._target_generation_size((16, 16), 512) == (512, 512)
+
+    def test_target_generation_size_preserves_aspect(self):
+        from spriter.ai import diffusion
+
+        assert diffusion._target_generation_size((64, 32), 512) == (512, 256)
+
+    def test_target_generation_size_snaps_to_multiple_of_8(self):
+        from spriter.ai import diffusion
+
+        w, h = diffusion._target_generation_size((100, 30), 512)
+        assert w == 512
+        assert h % 8 == 0
+
     def test_load_pipeline_uses_single_file_for_safetensors(
         self, tmp_path, monkeypatch
     ):

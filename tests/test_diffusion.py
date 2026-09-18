@@ -436,104 +436,6 @@ class TestDiffusionBackend:
         _, kwargs = xl_cls.from_single_file.call_args
         assert "safety_checker" not in kwargs
 
-    def test_load_inpaint_pipeline_routes_sd(self, tmp_path, monkeypatch):
-        import sys
-
-        from spriter.ai import diffusion
-
-        model_file = tmp_path / "sd.safetensors"
-        _write_safetensors_stub(model_file, ["cond_stage_model.transformer.weight"])
-
-        fake_torch = MagicMock()
-        fake_torch.cuda.is_available.return_value = False
-        sd_cls = MagicMock()
-        xl_cls = MagicMock()
-        fake_diffusers = MagicMock()
-        fake_diffusers.StableDiffusionInpaintPipeline = sd_cls
-        fake_diffusers.StableDiffusionXLInpaintPipeline = xl_cls
-
-        monkeypatch.setitem(sys.modules, "torch", fake_torch)
-        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
-        monkeypatch.setattr(diffusion, "is_available", lambda: True)
-
-        diffusion.load_inpaint_pipeline(model_file)
-
-        sd_cls.from_single_file.assert_called_once()
-        xl_cls.from_single_file.assert_not_called()
-
-    def test_load_inpaint_pipeline_routes_sdxl(self, tmp_path, monkeypatch):
-        import sys
-
-        from spriter.ai import diffusion
-
-        model_file = tmp_path / "sdxl.safetensors"
-        _write_safetensors_stub(
-            model_file, ["conditioner.embedders.1.model.token_embedding.weight"]
-        )
-
-        fake_torch = MagicMock()
-        fake_torch.cuda.is_available.return_value = False
-        sd_cls = MagicMock()
-        xl_cls = MagicMock()
-        fake_diffusers = MagicMock()
-        fake_diffusers.StableDiffusionInpaintPipeline = sd_cls
-        fake_diffusers.StableDiffusionXLInpaintPipeline = xl_cls
-
-        monkeypatch.setitem(sys.modules, "torch", fake_torch)
-        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
-        monkeypatch.setattr(diffusion, "is_available", lambda: True)
-
-        diffusion.load_inpaint_pipeline(model_file)
-
-        xl_cls.from_single_file.assert_called_once()
-        sd_cls.from_single_file.assert_not_called()
-
-    def test_build_inpaint_row_layout_and_mask(self):
-        from spriter.ai import diffusion
-
-        f = np.zeros((8, 8, 4), dtype=np.uint8)
-        f[..., 3] = 255
-        image, mask, bbox = diffusion._build_inpaint_row([f, f, f], 8, 8, 512, seed=0)
-        assert image.size == (512, 512)
-        assert mask.size == (512, 512)
-        # Mask marks exactly the final (NEW) cell of a 1x4 row padded to square.
-        m = np.asarray(mask)
-        x0, y0, w, h = bbox
-        assert m[y0 : y0 + h, x0 : x0 + w].min() == 255
-        # Region outside the NEW cell is unmasked.
-        assert m[:, :x0].max() == 0
-
-    def test_build_inpaint_row_pads_missing_frames(self):
-        from spriter.ai import diffusion
-
-        f = np.zeros((8, 8, 4), dtype=np.uint8)
-        f[..., 3] = 255
-        # Only one context frame supplied; should still build a valid square.
-        image, mask, bbox = diffusion._build_inpaint_row([f], 8, 8, 512, seed=0)
-        assert image.size == (512, 512)
-        assert mask.size == (512, 512)
-
-    def test_generate_next_frame_inpaints_and_crops(self):
-        from PIL import Image
-
-        from spriter.ai import diffusion
-
-        native = 512
-        out_img = Image.new("RGB", (native, native), (10, 20, 30))
-        result = MagicMock()
-        result.images = [out_img]
-        pipeline = MagicMock(return_value=result)  # no "XL" -> SD, native 512
-
-        f = np.zeros((16, 16, 4), dtype=np.uint8)
-        f[..., 3] = 255
-        out = diffusion.generate_next_frame(pipeline, [f, f, f], 16, 16, "walk")
-
-        _, kwargs = pipeline.call_args
-        assert "mask_image" in kwargs
-        assert kwargs["image"].size == (native, native)
-        # Output is the cropped NEW cell (RGBA).
-        assert out.ndim == 3 and out.shape[2] == 4
-
     def test_model_info_for_safetensors_file(self, tmp_path):
         from spriter.ai import diffusion
 
@@ -712,10 +614,8 @@ class TestDiffusionMenu:
         with patch.object(
             _DiffusionWorker, "start", _DiffusionWorker.run
         ), patch.object(diffusion, "is_available", return_value=True), patch.object(
-            diffusion, "load_inpaint_pipeline", return_value=MagicMock()
-        ), patch.object(
-            diffusion, "generate_next_frame", return_value=generated
-        ), patch(
+            diffusion, "load_pipeline", return_value=MagicMock()
+        ), patch.object(diffusion, "generate", return_value=generated), patch(
             "spriter.ui.main_window.QInputDialog.getText",
             return_value=("a hero", True),
         ):

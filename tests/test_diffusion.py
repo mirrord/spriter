@@ -273,6 +273,26 @@ class TestDiffusionBackend:
 
         assert diffusion._target_generation_size((16, 16), 512) == (512, 512)
 
+    def test_dtype_kwargs_uses_dtype_on_modern_diffusers(self, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        fake_diffusers = MagicMock()
+        fake_diffusers.__version__ = "0.40.0"
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        assert diffusion._dtype_kwargs("fp16") == {"dtype": "fp16"}
+
+    def test_dtype_kwargs_falls_back_to_torch_dtype_on_old_diffusers(self, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        fake_diffusers = MagicMock()
+        fake_diffusers.__version__ = "0.27.0"
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        assert diffusion._dtype_kwargs("fp16") == {"torch_dtype": "fp16"}
+
     def test_target_generation_size_preserves_aspect(self):
         from spriter.ai import diffusion
 
@@ -469,6 +489,231 @@ class TestDiffusionBackend:
 
 
 # ---------------------------------------------------------------------------
+# Next-frame prediction (ControlNet + motion, Method B)
+# ---------------------------------------------------------------------------
+
+
+class TestNextFrameControlNet:
+    def _frame(self, size=16, x=2, color=(255, 0, 0)):
+        arr = np.zeros((size, size, 4), dtype=np.uint8)
+        arr[4:12, x : x + 6, :3] = color
+        arr[4:12, x : x + 6, 3] = 255
+        return arr
+
+    def test_generate_next_frame_requires_two_frames(self):
+        from spriter.ai import diffusion
+
+        pipeline = MagicMock()
+        with pytest.raises(ValueError):
+            diffusion.generate_next_frame(pipeline, [self._frame()], "")
+
+    def test_generate_next_frame_wires_controlnet_call(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        fake_img = Image.new("RGB", (512, 512), (0, 128, 255))
+        result = MagicMock()
+        result.images = [fake_img]
+        pipeline = MagicMock(return_value=result)  # class name has no "XL" -> SD
+
+        prev = self._frame(x=2)
+        curr = self._frame(x=5)
+        out = diffusion.generate_next_frame(
+            pipeline, [prev, curr], "a hero", strength=0.5
+        )
+
+        pipeline.assert_called_once()
+        _, kwargs = pipeline.call_args
+        assert kwargs["prompt"] == "a hero"
+        assert kwargs["strength"] == 0.5
+        # The predicted-structure control image is passed alongside the init.
+        assert "control_image" in kwargs
+        assert kwargs["image"].size == kwargs["control_image"].size == (512, 512)
+        assert out.shape == (512, 512, 4)
+
+    def test_generate_next_frame_passes_ip_adapter_image_when_enabled(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        fake_img = Image.new("RGB", (512, 512), (0, 128, 255))
+        result = MagicMock()
+        result.images = [fake_img]
+        pipeline = MagicMock(return_value=result)
+
+        out = diffusion.generate_next_frame(
+            pipeline,
+            [self._frame(x=2), self._frame(x=5)],
+            "a hero",
+            use_ip_adapter=True,
+        )
+        _, kwargs = pipeline.call_args
+        assert "ip_adapter_image" in kwargs
+        assert kwargs["ip_adapter_image"].size == (512, 512)
+        assert out.shape == (512, 512, 4)
+
+    def test_generate_next_frame_omits_ip_adapter_image_by_default(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        fake_img = Image.new("RGB", (512, 512), (0, 128, 255))
+        result = MagicMock()
+        result.images = [fake_img]
+        pipeline = MagicMock(return_value=result)
+
+        diffusion.generate_next_frame(
+            pipeline, [self._frame(x=2), self._frame(x=5)], "a hero"
+        )
+        _, kwargs = pipeline.call_args
+        assert "ip_adapter_image" not in kwargs
+
+    def test_load_controlnet_pipeline_wires_from_pretrained(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        cn_cls = MagicMock()
+        pipe_cls = MagicMock()
+        fake_diffusers = MagicMock()
+        fake_diffusers.ControlNetModel = cn_cls
+        fake_diffusers.StableDiffusionControlNetImg2ImgPipeline = pipe_cls
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_controlnet_pipeline(model_dir, cn_dir)
+
+        cn_cls.from_pretrained.assert_called_once()
+        pipe_cls.from_pretrained.assert_called_once()
+        pipe_cls.from_single_file.assert_not_called()
+
+    def test_load_controlnet_pipeline_applies_adapter(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+        adapter_dir = tmp_path / "adapter"
+        adapter_dir.mkdir()
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        pipe_cls = fake_diffusers.StableDiffusionControlNetImg2ImgPipeline
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_controlnet_pipeline(model_dir, cn_dir, adapter_path=adapter_dir)
+
+        pipeline = pipe_cls.from_pretrained.return_value
+        pipeline.load_lora_weights.assert_called_once_with(str(adapter_dir))
+
+    def test_load_controlnet_pipeline_skips_missing_adapter(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        pipe_cls = fake_diffusers.StableDiffusionControlNetImg2ImgPipeline
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_controlnet_pipeline(
+            model_dir, cn_dir, adapter_path=tmp_path / "does_not_exist"
+        )
+
+        pipeline = pipe_cls.from_pretrained.return_value
+        pipeline.load_lora_weights.assert_not_called()
+
+    def test_load_controlnet_pipeline_applies_ip_adapter(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+        ip_file = tmp_path / "ip-adapter_sd15.safetensors"
+        ip_file.write_bytes(b"x")
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        pipe_cls = fake_diffusers.StableDiffusionControlNetImg2ImgPipeline
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_controlnet_pipeline(
+            model_dir, cn_dir, ip_adapter_path=ip_file, ip_adapter_scale=0.7
+        )
+
+        pipeline = pipe_cls.from_pretrained.return_value
+        pipeline.load_ip_adapter.assert_called_once_with(
+            str(tmp_path), subfolder="", weight_name=ip_file.name
+        )
+        pipeline.set_ip_adapter_scale.assert_called_once_with(0.7)
+
+    def test_load_controlnet_pipeline_skips_missing_ip_adapter(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        pipe_cls = fake_diffusers.StableDiffusionControlNetImg2ImgPipeline
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+
+        diffusion.load_controlnet_pipeline(
+            model_dir, cn_dir, ip_adapter_path=tmp_path / "missing.safetensors"
+        )
+
+        pipeline = pipe_cls.from_pretrained.return_value
+        pipeline.load_ip_adapter.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # Settings persistence
 # ---------------------------------------------------------------------------
 
@@ -488,6 +733,36 @@ class TestSettingsPersistence:
         from spriter.core.settings import Settings
 
         assert Settings().diffusion_model_path == ""
+
+    def test_diffusion_controlnet_path_roundtrip(self, tmp_path):
+        from spriter.core.settings import Settings
+
+        s = Settings()
+        s.diffusion_controlnet_path = str(tmp_path / "cn")
+        path = tmp_path / "settings.json"
+        s.save(path)
+        loaded = Settings.load(path)
+        assert loaded.diffusion_controlnet_path == str(tmp_path / "cn")
+
+    def test_diffusion_controlnet_path_default_empty(self):
+        from spriter.core.settings import Settings
+
+        assert Settings().diffusion_controlnet_path == ""
+
+    def test_diffusion_ip_adapter_path_roundtrip(self, tmp_path):
+        from spriter.core.settings import Settings
+
+        s = Settings()
+        s.diffusion_ip_adapter_path = str(tmp_path / "ip.safetensors")
+        path = tmp_path / "settings.json"
+        s.save(path)
+        loaded = Settings.load(path)
+        assert loaded.diffusion_ip_adapter_path == str(tmp_path / "ip.safetensors")
+
+    def test_diffusion_ip_adapter_path_default_empty(self):
+        from spriter.core.settings import Settings
+
+        assert Settings().diffusion_ip_adapter_path == ""
 
 
 # ---------------------------------------------------------------------------
@@ -512,9 +787,12 @@ class TestDiffusionMenu:
         assert menu is not None
         labels = [a.text().replace("&", "") for a in menu.actions() if a.text()]
         assert "Select Model\u2026" in labels
+        assert "Select ControlNet\u2026" in labels
+        assert "Select IP-Adapter\u2026" in labels
         assert "Download Model\u2026" in labels
         assert "Model Info\u2026" in labels
-        assert "Generate Next Frame\u2026" in labels
+        assert "Restyle Frame\u2026" in labels
+        assert "Predict Next Frame\u2026" in labels
         win.close()
 
     def test_model_info_shows_message_when_no_model(self, qapp):
@@ -621,6 +899,248 @@ class TestDiffusionMenu:
         ):
             win._diffusion_generate_frame()
 
+        assert win._sprite.frame_count == before + 1
+        win._unsaved = False
+        win.close()
+
+    def test_select_controlnet_saves_to_settings(self, qapp, tmp_path):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        cn_dir = str(tmp_path / "controlnet")
+        with patch(
+            "spriter.ui.main_window.QFileDialog.getExistingDirectory",
+            return_value=cn_dir,
+        ), patch("spriter.ui.main_window.QMessageBox.information"), patch(
+            "spriter.core.settings.Settings.save"
+        ):
+            win._diffusion_select_controlnet()
+        assert win._settings.diffusion_controlnet_path == cn_dir
+        win.close()
+
+    def test_select_ip_adapter_saves_to_settings(self, qapp, tmp_path):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        ip_file = str(tmp_path / "ip-adapter_sd15.safetensors")
+        with patch(
+            "spriter.ui.main_window.QFileDialog.getOpenFileName",
+            return_value=(ip_file, ""),
+        ), patch("spriter.ui.main_window.QMessageBox.information"), patch(
+            "spriter.core.settings.Settings.save"
+        ):
+            win._diffusion_select_ip_adapter()
+        assert win._settings.diffusion_ip_adapter_path == ip_file
+        win.close()
+
+    def test_predict_next_frame_requires_controlnet(self, qapp, tmp_path):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        win._settings.diffusion_model_path = str(model_dir)
+        win._settings.diffusion_controlnet_path = ""
+        with patch.object(diffusion, "is_available", return_value=True), patch(
+            "spriter.ui.main_window.QMessageBox.information"
+        ) as info:
+            win._diffusion_predict_next_frame()
+        info.assert_called_once()
+        win.close()
+
+    def test_predict_next_frame_full_flow_inserts_frame(self, qapp, tmp_path):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow, _DiffusionWorker
+
+        win = MainWindow()
+        win._unsaved = False
+        assert win._sprite is not None
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+        win._settings.diffusion_model_path = str(model_dir)
+        win._settings.diffusion_controlnet_path = str(cn_dir)
+        # Need at least two frames so the active frame index is >= 1.
+        win._sprite.add_frame()
+        if win._canvas:
+            win._canvas.active_frame = 1
+        before = win._sprite.frame_count
+
+        generated = np.zeros((48, 48, 4), dtype=np.uint8)
+        generated[..., :3] = 255
+        generated[10:30, 10:30] = (255, 0, 0, 255)
+
+        with patch.object(
+            _DiffusionWorker, "start", _DiffusionWorker.run
+        ), patch.object(diffusion, "is_available", return_value=True), patch.object(
+            diffusion, "load_controlnet_pipeline", return_value=MagicMock()
+        ), patch.object(
+            diffusion, "generate_next_frame", return_value=generated
+        ), patch(
+            "spriter.ui.main_window.QInputDialog.getText",
+            return_value=("a hero", True),
+        ):
+            win._diffusion_predict_next_frame()
+
+        assert win._sprite.frame_count == before + 1
+        win._unsaved = False
+        win.close()
+
+
+class TestPredictAutoTrain:
+    def _sprite_with_content(self, n=6):
+        from spriter.core.sprite import Sprite
+
+        sprite = Sprite(8, 8)
+        sprite.add_layer("Layer")
+        for i in range(n):
+            sprite.add_frame()
+            arr = np.zeros((8, 8, 4), dtype=np.uint8)
+            arr[:, :, i % 3] = 255
+            arr[:, :, 3] = 255
+            sprite.set_cel_pixels(0, i, arr)
+        return sprite
+
+    def test_prepare_adapter_none_without_train_deps(self, qapp):
+        from spriter.ai import train
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        with patch.object(train, "is_train_available", return_value=False):
+            adapter_dir, frames = win._diffusion_prepare_adapter()
+        assert adapter_dir is None
+        assert frames is None
+        win.close()
+
+    def test_prepare_adapter_uses_existing_without_prompt(self, qapp):
+        from spriter.ai import train
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        win._sprite = self._sprite_with_content()
+        with patch.object(train, "is_train_available", return_value=True), patch.object(
+            train, "has_trained_adapter", return_value=True
+        ), patch("spriter.ui.main_window.QMessageBox.question") as question:
+            adapter_dir, frames = win._diffusion_prepare_adapter()
+        assert adapter_dir is not None
+        assert frames is None
+        question.assert_not_called()  # existing adapter is used silently
+        win.close()
+
+    def test_prepare_adapter_offers_training_when_missing(self, qapp):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from spriter.ai import train
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        win._sprite = self._sprite_with_content(n=6)
+        with patch.object(train, "is_train_available", return_value=True), patch.object(
+            train, "has_trained_adapter", return_value=False
+        ), patch(
+            "spriter.ui.main_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ):
+            adapter_dir, frames = win._diffusion_prepare_adapter()
+        assert adapter_dir is not None
+        assert frames is not None
+        assert len(frames) == 6
+        win.close()
+
+    def test_prepare_adapter_declined_returns_no_frames(self, qapp):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from spriter.ai import train
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        win._sprite = self._sprite_with_content(n=6)
+        with patch.object(train, "is_train_available", return_value=True), patch.object(
+            train, "has_trained_adapter", return_value=False
+        ), patch(
+            "spriter.ui.main_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.No,
+        ):
+            adapter_dir, frames = win._diffusion_prepare_adapter()
+        assert adapter_dir is not None
+        assert frames is None
+        win.close()
+
+    def test_prepare_adapter_too_few_frames_no_prompt(self, qapp):
+        from spriter.ai import train
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        win._sprite = self._sprite_with_content(n=2)
+        with patch.object(train, "is_train_available", return_value=True), patch.object(
+            train, "has_trained_adapter", return_value=False
+        ), patch("spriter.ui.main_window.QMessageBox.question") as question:
+            adapter_dir, frames = win._diffusion_prepare_adapter()
+        assert frames is None
+        question.assert_not_called()
+        win.close()
+
+    def test_predict_full_flow_trains_then_predicts(self, qapp, tmp_path):
+        from PyQt6.QtWidgets import QMessageBox
+
+        from spriter.ai import diffusion, train
+        from spriter.ui.main_window import MainWindow, _DiffusionWorker
+
+        win = MainWindow()
+        win._unsaved = False
+        assert win._sprite is not None
+        # Grow the existing project to six content-filled frames (keeps the
+        # canvas and sprite consistent for the insert callback).
+        for i in range(6):
+            if i >= win._sprite.frame_count:
+                win._sprite.add_frame()
+            arr = np.zeros((win._sprite.height, win._sprite.width, 4), dtype=np.uint8)
+            arr[:, :, i % 3] = 255
+            arr[:, :, 3] = 255
+            win._sprite.set_cel_pixels(0, i, arr)
+        if win._canvas:
+            win._canvas.active_frame = 5
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+        win._settings.diffusion_model_path = str(model_dir)
+        win._settings.diffusion_controlnet_path = str(cn_dir)
+        before = win._sprite.frame_count
+
+        generated = np.zeros((win._sprite.height, win._sprite.width, 4), dtype=np.uint8)
+        generated[..., :3] = 255
+
+        with patch.object(
+            _DiffusionWorker, "start", _DiffusionWorker.run
+        ), patch.object(diffusion, "is_available", return_value=True), patch.object(
+            train, "is_train_available", return_value=True
+        ), patch.object(train, "has_trained_adapter", return_value=False), patch.object(
+            train, "train_next_frame_predictor"
+        ) as do_train, patch.object(
+            diffusion, "load_controlnet_pipeline", return_value=MagicMock()
+        ), patch.object(
+            diffusion, "generate_next_frame", return_value=generated
+        ), patch(
+            "spriter.ui.main_window.QMessageBox.question",
+            return_value=QMessageBox.StandardButton.Yes,
+        ), patch(
+            "spriter.ui.main_window.QInputDialog.getText",
+            return_value=("a hero", True),
+        ):
+            win._diffusion_predict_next_frame()
+
+        do_train.assert_called_once()
         assert win._sprite.frame_count == before + 1
         win._unsaved = False
         win.close()

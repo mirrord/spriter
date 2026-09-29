@@ -1,0 +1,5 @@
+<RCC>
+  <qresource prefix="/" >
+    <file alias="sprite.ico">assets/sprite.ico</file>
+  </qresource>
+</RCC>

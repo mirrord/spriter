@@ -21,7 +21,7 @@ import numpy as np
 from PIL import Image
 
 # Default image-to-image parameters.
-DEFAULT_STRENGTH = 0.6
+DEFAULT_STRENGTH = 0.8
 DEFAULT_GUIDANCE_SCALE = 7.5
 DEFAULT_STEPS = 30
 
@@ -125,6 +125,24 @@ def _select_device_and_dtype() -> tuple[str, Any]:
     return device, dtype
 
 
+def _dtype_kwargs(dtype: Any) -> dict[str, Any]:
+    """Return the dtype keyword accepted by the installed diffusers loaders.
+
+    diffusers renamed ``torch_dtype`` to ``dtype`` (the old name warns from
+    0.34 and is removed in 1.0.0), so pick whichever the installed version
+    understands to stay quiet on new releases while supporting ``>=0.27``.
+    """
+    import diffusers  # type: ignore[import-not-found]
+
+    try:
+        major, minor = (int(part) for part in diffusers.__version__.split(".")[:2])
+    except (ValueError, IndexError, TypeError, AttributeError):
+        return {"torch_dtype": dtype}
+    if (major, minor) >= (0, 34):
+        return {"dtype": dtype}
+    return {"torch_dtype": dtype}
+
+
 def _finalize_pipeline(pipeline: Any, device: str, disable_safety_checker: bool) -> Any:
     """Null the safety checker (optionally) and move the pipeline to *device*."""
     if disable_safety_checker and hasattr(pipeline, "safety_checker"):
@@ -141,8 +159,54 @@ def _finalize_pipeline(pipeline: Any, device: str, disable_safety_checker: bool)
     return pipeline
 
 
+def _maybe_load_adapter(pipeline: Any, adapter_path: str | Path | None) -> None:
+    """Load LoRA weights from *adapter_path* into *pipeline* when present.
+
+    A missing or ``None`` path is a no-op, so callers can pass an optional
+    per-project adapter without first checking whether one has been trained.
+    """
+    if adapter_path is None:
+        return
+    path = Path(adapter_path)
+    if not path.exists():
+        return
+    pipeline.load_lora_weights(str(path))
+
+
+# Default influence of the IP-Adapter identity lock; high enough to hold the
+# sprite's look, low enough to let ControlNet drive the new pose.
+DEFAULT_IP_ADAPTER_SCALE = 0.6
+
+
+def _maybe_load_ip_adapter(
+    pipeline: Any,
+    ip_adapter_path: str | Path | None,
+    scale: float = DEFAULT_IP_ADAPTER_SCALE,
+) -> bool:
+    """Load an IP-Adapter weight file into *pipeline* when present.
+
+    *ip_adapter_path* is the path to a single IP-Adapter weight file (``.bin``
+    or ``.safetensors``); its parent folder and filename are handed to
+    diffusers' loader.  A missing or ``None`` path is a no-op.
+
+    Returns:
+        ``True`` when an IP-Adapter was loaded, else ``False``.
+    """
+    if ip_adapter_path is None:
+        return False
+    path = Path(ip_adapter_path)
+    if not path.exists():
+        return False
+    pipeline.load_ip_adapter(str(path.parent), subfolder="", weight_name=path.name)
+    pipeline.set_ip_adapter_scale(scale)
+    return True
+
+
 def load_pipeline(
-    model_path: str | Path, *, disable_safety_checker: bool = True
+    model_path: str | Path,
+    *,
+    disable_safety_checker: bool = True,
+    adapter_path: str | Path | None = None,
 ) -> Any:
     """Load an image-to-image pipeline from a local model.
 
@@ -158,6 +222,7 @@ def load_pipeline(
         disable_safety_checker: When ``True`` (the default) the Stable Diffusion
             NSFW safety checker is not loaded.  This avoids frequent false
             positives on pixel-art content.
+        adapter_path: Optional directory holding a trained LoRA adapter to apply.
 
     Returns:
         A ready-to-run diffusers image-to-image pipeline moved to the best
@@ -186,7 +251,7 @@ def load_pipeline(
             )
 
             pipeline = StableDiffusionXLImg2ImgPipeline.from_single_file(
-                str(path), torch_dtype=dtype
+                str(path), **_dtype_kwargs(dtype)
             )
         else:
             from diffusers import (  # type: ignore[import-not-found]
@@ -194,7 +259,7 @@ def load_pipeline(
             )
 
             pipeline = StableDiffusionImg2ImgPipeline.from_single_file(
-                str(path), torch_dtype=dtype, **safety_kwargs
+                str(path), **_dtype_kwargs(dtype), **safety_kwargs
             )
     else:
         from diffusers import (  # type: ignore[import-not-found]
@@ -202,8 +267,9 @@ def load_pipeline(
         )
 
         pipeline = AutoPipelineForImage2Image.from_pretrained(
-            str(path), torch_dtype=dtype, **safety_kwargs
+            str(path), **_dtype_kwargs(dtype), **safety_kwargs
         )
+    _maybe_load_adapter(pipeline, adapter_path)
     return _finalize_pipeline(pipeline, device, disable_safety_checker)
 
 
@@ -299,6 +365,147 @@ def generate(
         guidance_scale=guidance_scale,
         num_inference_steps=steps,
     )
+    out_image = result.images[0].convert("RGBA")
+    return np.array(out_image, dtype=np.uint8)
+
+
+def load_controlnet_pipeline(
+    model_path: str | Path,
+    controlnet_path: str | Path,
+    *,
+    disable_safety_checker: bool = True,
+    adapter_path: str | Path | None = None,
+    ip_adapter_path: str | Path | None = None,
+    ip_adapter_scale: float = DEFAULT_IP_ADAPTER_SCALE,
+) -> Any:
+    """Load a Stable Diffusion ControlNet image-to-image pipeline.
+
+    Used by :func:`generate_next_frame` to condition generation on a predicted
+    next-frame structure map.  Only SD1.x/2.x is supported here (the SDXL
+    ControlNet img2img pipeline is a different class); an SDXL base model should
+    use the plain :func:`generate` restyle path instead.
+
+    Args:
+        model_path: Path to a diffusers model directory or a single
+            ``.safetensors`` SD checkpoint.
+        controlnet_path: Path to a local ControlNet model directory.
+        disable_safety_checker: When ``True`` (default) the NSFW safety checker
+            is not loaded, avoiding false positives on pixel-art content.
+        adapter_path: Optional directory holding a trained LoRA adapter that
+            teaches the project's own appearance; applied when present.
+        ip_adapter_path: Optional IP-Adapter weight file that locks the sprite's
+            identity from the current frame; applied when present.
+        ip_adapter_scale: Influence of the IP-Adapter identity lock (0–1).
+
+    Returns:
+        A ready-to-run ControlNet image-to-image pipeline on the best device.
+
+    Raises:
+        RuntimeError: If the optional dependencies are not installed.
+        FileNotFoundError: If either path does not exist.
+    """
+    _require_available()
+    path = Path(model_path)
+    cn_path = Path(controlnet_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Model path does not exist: {path}")
+    if not cn_path.exists():
+        raise FileNotFoundError(f"ControlNet path does not exist: {cn_path}")
+
+    device, dtype = _select_device_and_dtype()
+    from diffusers import (  # type: ignore[import-not-found]
+        ControlNetModel,
+        StableDiffusionControlNetImg2ImgPipeline,
+    )
+
+    controlnet = ControlNetModel.from_pretrained(str(cn_path), **_dtype_kwargs(dtype))
+    safety_kwargs: dict[str, Any] = {}
+    if disable_safety_checker:
+        safety_kwargs["safety_checker"] = None
+        safety_kwargs["requires_safety_checker"] = False
+
+    if path.is_file() and path.suffix.lower() == ".safetensors":
+        pipeline = StableDiffusionControlNetImg2ImgPipeline.from_single_file(
+            str(path), controlnet=controlnet, **_dtype_kwargs(dtype), **safety_kwargs
+        )
+    else:
+        pipeline = StableDiffusionControlNetImg2ImgPipeline.from_pretrained(
+            str(path), controlnet=controlnet, **_dtype_kwargs(dtype), **safety_kwargs
+        )
+    _maybe_load_adapter(pipeline, adapter_path)
+    _maybe_load_ip_adapter(pipeline, ip_adapter_path, ip_adapter_scale)
+    return _finalize_pipeline(pipeline, device, disable_safety_checker)
+
+
+def generate_next_frame(
+    pipeline: Any,
+    context_frames: list[np.ndarray],
+    prompt: str = "",
+    *,
+    strength: float = DEFAULT_STRENGTH,
+    guidance_scale: float = DEFAULT_GUIDANCE_SCALE,
+    steps: int = DEFAULT_STEPS,
+    controlnet_conditioning_scale: float = 1.0,
+    use_ip_adapter: bool = False,
+) -> np.ndarray:
+    """Predict the next animation frame using motion-guided ControlNet img2img.
+
+    Motion is estimated from the last two context frames and used to warp the
+    current frame's edge map forward; that predicted structure conditions a
+    ControlNet pipeline so the result advances the animation rather than merely
+    restyling the current frame.
+
+    Args:
+        pipeline: A ControlNet image-to-image pipeline from
+            :func:`load_controlnet_pipeline`.
+        context_frames: Consecutive ``H×W×4`` ``uint8`` RGBA frames, oldest
+            first.  The last two are used; at least two are required.
+        prompt: Optional text prompt guiding the generation.
+        strength: How much the init image is transformed (0–1).
+        guidance_scale: Classifier-free guidance scale.
+        steps: Number of denoising steps.
+        controlnet_conditioning_scale: Weight of the structural guidance.
+        use_ip_adapter: When ``True``, feed the current frame as the IP-Adapter
+            image so the sprite's identity is preserved (the pipeline must have
+            been loaded with an IP-Adapter).
+
+    Returns:
+        The generated image as an ``H×W×4`` ``uint8`` RGBA array at generation
+        resolution; callers scale it back to the canvas.
+
+    Raises:
+        ValueError: If fewer than two context frames are supplied.
+    """
+    from .motion import edge_map, predict_next_frame
+
+    if len(context_frames) < 2:
+        raise ValueError("generate_next_frame requires at least 2 context frames")
+
+    prev, curr = context_frames[-2], context_frames[-1]
+    predicted = predict_next_frame(prev, curr)
+
+    init_image = _rgba_to_rgb_image(curr)
+    target = _target_generation_size(init_image.size, _native_size_for(pipeline))
+    if target != init_image.size:
+        init_image = init_image.resize(target, Image.Resampling.LANCZOS)
+
+    control_image = Image.fromarray(edge_map(predicted), mode="L").convert("RGB")
+    if control_image.size != target:
+        control_image = control_image.resize(target, Image.Resampling.LANCZOS)
+
+    call_kwargs: dict[str, Any] = {
+        "prompt": prompt,
+        "image": init_image,
+        "control_image": control_image,
+        "strength": strength,
+        "guidance_scale": guidance_scale,
+        "num_inference_steps": steps,
+        "controlnet_conditioning_scale": controlnet_conditioning_scale,
+    }
+    if use_ip_adapter:
+        # Identity is locked from the current frame; ControlNet drives the pose.
+        call_kwargs["ip_adapter_image"] = init_image
+    result = pipeline(**call_kwargs)
     out_image = result.images[0].convert("RGBA")
     return np.array(out_image, dtype=np.uint8)
 

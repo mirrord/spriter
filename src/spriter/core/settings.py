@@ -67,6 +67,10 @@ class Settings:
     # ── Diffusion (optional AI frame prediction) ─────────────────────
     # Filesystem path to the selected local diffusion model directory.
     diffusion_model_path: str = ""
+    # Filesystem path to a ControlNet model used for next-frame prediction.
+    diffusion_controlnet_path: str = ""
+    # Filesystem path to an IP-Adapter weight file that locks sprite identity.
+    diffusion_ip_adapter_path: str = ""
 
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
@@ -100,6 +104,8 @@ class Settings:
         self.last_open_directory: str = ""
         self.last_save_directory: str = ""
         self.diffusion_model_path: str = ""
+        self.diffusion_controlnet_path: str = ""
+        self.diffusion_ip_adapter_path: str = ""
         self.keybindings: dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
@@ -122,6 +128,8 @@ class Settings:
             "last_open_directory": self.last_open_directory,
             "last_save_directory": self.last_save_directory,
             "diffusion_model_path": self.diffusion_model_path,
+            "diffusion_controlnet_path": self.diffusion_controlnet_path,
+            "diffusion_ip_adapter_path": self.diffusion_ip_adapter_path,
             "keybindings": dict(self.keybindings),
         }
 
@@ -163,6 +171,12 @@ class Settings:
         )
         s.diffusion_model_path = str(
             data.get("diffusion_model_path", s.diffusion_model_path)
+        )
+        s.diffusion_controlnet_path = str(
+            data.get("diffusion_controlnet_path", s.diffusion_controlnet_path)
+        )
+        s.diffusion_ip_adapter_path = str(
+            data.get("diffusion_ip_adapter_path", s.diffusion_ip_adapter_path)
         )
         kb = data.get("keybindings")
         if isinstance(kb, dict):

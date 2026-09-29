@@ -27,7 +27,7 @@ A pixel-art sprite editor built with Python and PyQt6. Spriter provides a focuse
 - **Recent files** — quick-open list in the File menu
 - **Drag-and-drop** — open project or image files by dropping onto the window
 - **Preferences** — persistent settings for canvas defaults, grid/checker colors, undo depth, autosave interval, theme, and customizable keybindings
-- **Diffusion frame prediction** *(optional)* — generate the next animation frame from the current one using a local, user-selectable Hugging Face diffusers image-to-image model; the result has its flat background removed and is uniformly scaled to fit the canvas (see [Diffusion](#diffusion-optional))
+- **Diffusion frame prediction** *(optional)* — restyle a frame or predict the next animation frame with a local, user-selectable Hugging Face diffusers model; next-frame prediction is motion- and ControlNet-guided and can be sharpened by automatic per-project fine-tuning (see [Diffusion](#diffusion-optional))
 
 ## Installation
 
@@ -42,6 +42,13 @@ dependencies, installed via the `diffusion` extra:
 
 ```console
 pip install spriter[diffusion]
+```
+
+To also enable automatic per-project fine-tuning of the next-frame predictor,
+install the `train` extra (it includes everything in `diffusion`):
+
+```console
+pip install spriter[train]
 ```
 
 ## Usage
@@ -94,14 +101,34 @@ main()
 With the `diffusion` extra installed, the **Diffusion** menu offers:
 
 - **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file (Stable Diffusion 1.x/2.x and SDXL are auto-detected).
+- **Select ControlNet…** — point Spriter at a local ControlNet model directory used to guide next-frame prediction. A scribble or lineart ControlNet for SD 1.x works well (e.g. `lllyasviel/control_v11p_sd15_scribble`); download it with **Download Model…** or place it on disk.
+- **Select IP-Adapter…** — *(optional)* point Spriter at an IP-Adapter weight file (e.g. `ip-adapter_sd15.safetensors` from `h94/IP-Adapter`). When set, next-frame prediction locks the sprite's identity from the current frame so the character stays consistent while the ControlNet drives the new pose.
 - **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
   (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.
 - **Model Info…** — show details about the currently selected model (path, type, size, and whether the optional dependencies are installed).
-- **Generate Next Frame…** — generate a new frame from the current one using
-  image-to-image diffusion. You can supply an optional text prompt to guide the
-  result. The generated image has its flat background keyed out and is uniformly
-  scaled down to fit the canvas, then inserted as a new frame right after the
-  current one (undoable).
+- **Restyle Frame…** — reinterpret the current frame with image-to-image
+  diffusion and an optional text prompt. The result has its flat background
+  keyed out and is scaled to fit the canvas, then inserted as a new frame right
+  after the current one (undoable). Use this for style variations of a single
+  frame.
+- **Predict Next Frame…** — predict the *next* animation frame. Motion is
+  estimated from the two preceding frames and used to guide a ControlNet so the
+  result advances the animation rather than merely restyling it. When an
+  IP-Adapter is selected, the sprite's identity is held steady across frames.
+  Requires a selected ControlNet and at least two existing frames.
+
+#### Automatic fine-tuning
+
+With the `train` extra installed, next-frame prediction can learn your
+project's own motion. This is designed to stay out of your way:
+
+- **Frame pairs are harvested automatically** from every animation in the
+  project — there is nothing to label or configure.
+- The first time you predict a frame without a trained predictor, Spriter
+  offers to build one; training then runs in the background with a progress
+  indicator and **no hyperparameters to set**.
+- The resulting adapter is saved per-project and **applied automatically** on
+  subsequent predictions — you never have to select or manage it.
 
 Generation runs on the GPU when a CUDA device is available, otherwise on the CPU.
 

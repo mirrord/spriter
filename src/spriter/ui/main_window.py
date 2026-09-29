@@ -540,6 +540,16 @@ class MainWindow(QMainWindow):
             diffusion_menu, "&Select Model\u2026", self._diffusion_select_model
         )
         self._add_action(
+            diffusion_menu,
+            "Select &ControlNet\u2026",
+            self._diffusion_select_controlnet,
+        )
+        self._add_action(
+            diffusion_menu,
+            "Select IP-&Adapter\u2026",
+            self._diffusion_select_ip_adapter,
+        )
+        self._add_action(
             diffusion_menu, "&Download Model\u2026", self._diffusion_download_model
         )
         self._add_action(
@@ -548,8 +558,13 @@ class MainWindow(QMainWindow):
         diffusion_menu.addSeparator()
         self._add_action(
             diffusion_menu,
-            "&Generate Next Frame\u2026",
-            self._diffusion_generate_frame,
+            "&Restyle Frame\u2026",
+            self._diffusion_restyle_frame,
+        )
+        self._add_action(
+            diffusion_menu,
+            "&Predict Next Frame\u2026",
+            self._diffusion_predict_next_frame,
         )
 
         # ── Preferences ───────────────────────────────────────────────
@@ -1263,6 +1278,35 @@ class MainWindow(QMainWindow):
         self._settings.save()
         QMessageBox.information(self, "Diffusion", f"Model set to:\n{path}")
 
+    def _diffusion_select_controlnet(self) -> None:
+        start = self._settings.diffusion_controlnet_path or str(
+            self._diffusion_models_dir()
+        )
+        path = QFileDialog.getExistingDirectory(
+            self, "Select ControlNet Model Folder", start
+        )
+        if not path:
+            return
+        self._settings.diffusion_controlnet_path = path
+        self._settings.save()
+        QMessageBox.information(self, "Diffusion", f"ControlNet set to:\n{path}")
+
+    def _diffusion_select_ip_adapter(self) -> None:
+        start = self._settings.diffusion_ip_adapter_path or str(
+            self._diffusion_models_dir()
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select IP-Adapter Weight File",
+            start,
+            "IP-Adapter Weights (*.safetensors *.bin)",
+        )
+        if not path:
+            return
+        self._settings.diffusion_ip_adapter_path = path
+        self._settings.save()
+        QMessageBox.information(self, "Diffusion", f"IP-Adapter set to:\n{path}")
+
     def _diffusion_model_info(self) -> None:
         from ..ai import diffusion
 
@@ -1327,6 +1371,10 @@ class MainWindow(QMainWindow):
         self._run_diffusion_task(task, on_done, f"Downloading {repo_id}\u2026")
 
     def _diffusion_generate_frame(self) -> None:
+        """Backwards-compatible alias for :meth:`_diffusion_restyle_frame`."""
+        self._diffusion_restyle_frame()
+
+    def _diffusion_restyle_frame(self) -> None:
         if self._sprite is None:
             return
         from ..ai import diffusion
@@ -1339,7 +1387,7 @@ class MainWindow(QMainWindow):
         if not model_path or not Path(model_path).exists():
             QMessageBox.information(
                 self,
-                "Generate Next Frame",
+                "Restyle Frame",
                 "No diffusion model selected. Use Diffusion \u2192 Select Model "
                 "or Download Model first.",
             )
@@ -1347,8 +1395,8 @@ class MainWindow(QMainWindow):
 
         prompt, ok = QInputDialog.getText(
             self,
-            "Generate Next Frame",
-            "Optional prompt to guide generation:",
+            "Restyle Frame",
+            "Optional prompt to guide the restyle:",
         )
         if not ok:
             return
@@ -1364,6 +1412,143 @@ class MainWindow(QMainWindow):
             generated = diffusion.generate(pipeline, init_rgba, prompt.strip())
             return prepare_generated_frame(generated, canvas_w, canvas_h)
 
+        self._run_diffusion_task(
+            task, self._insert_generated_frame(fi, li), "Restyling frame\u2026"
+        )
+
+    def _diffusion_predict_next_frame(self) -> None:
+        if self._sprite is None:
+            return
+        from ..ai import diffusion
+        from ..ai.postprocess import prepare_generated_frame
+
+        if not diffusion.is_available():
+            self._diffusion_unavailable_message()
+            return
+        model_path = self._settings.diffusion_model_path
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.information(
+                self,
+                "Predict Next Frame",
+                "No diffusion model selected. Use Diffusion \u2192 Select Model "
+                "or Download Model first.",
+            )
+            return
+        cn_path = self._settings.diffusion_controlnet_path
+        if not cn_path or not Path(cn_path).exists():
+            QMessageBox.information(
+                self,
+                "Predict Next Frame",
+                "Next-frame prediction needs a ControlNet model. Use Diffusion "
+                "\u2192 Select ControlNet first (or use Restyle Frame instead).",
+            )
+            return
+
+        from ..core.compositor import composite_frame
+
+        li, fi = self._active_layer_frame()
+        if fi < 1:
+            QMessageBox.information(
+                self,
+                "Predict Next Frame",
+                "Next-frame prediction needs at least two preceding frames. "
+                "Draw an earlier frame first, or use Restyle Frame.",
+            )
+            return
+
+        prompt, ok = QInputDialog.getText(
+            self,
+            "Predict Next Frame",
+            "Optional prompt to guide generation:",
+        )
+        if not ok:
+            return
+
+        context = [composite_frame(self._sprite, i) for i in (fi - 1, fi)]
+        canvas_w, canvas_h = self._sprite.width, self._sprite.height
+
+        # Automatic, per-project fine-tuning: derive the adapter location, train
+        # once on demand, and thereafter apply it without any user management.
+        adapter_dir, train_frames = self._diffusion_prepare_adapter()
+        label = (
+            "Learning animation & predicting\u2026"
+            if train_frames is not None
+            else "Predicting next frame\u2026"
+        )
+
+        # Optional IP-Adapter identity lock (holds the sprite's look).
+        ip_path = self._settings.diffusion_ip_adapter_path
+        ip_adapter = ip_path if ip_path and Path(ip_path).exists() else None
+
+        def task():
+            if train_frames is not None:
+                from ..ai import train
+
+                train.train_next_frame_predictor(model_path, train_frames, adapter_dir)
+            use_adapter = self._diffusion_ready_adapter(adapter_dir)
+            pipeline = diffusion.load_controlnet_pipeline(
+                model_path,
+                cn_path,
+                adapter_path=use_adapter,
+                ip_adapter_path=ip_adapter,
+            )
+            generated = diffusion.generate_next_frame(
+                pipeline,
+                context,
+                prompt.strip(),
+                use_ip_adapter=ip_adapter is not None,
+            )
+            return prepare_generated_frame(generated, canvas_w, canvas_h)
+
+        self._run_diffusion_task(task, self._insert_generated_frame(fi, li), label)
+
+    def _diffusion_prepare_adapter(self):
+        """Return ``(adapter_dir, frames_to_train)`` for automatic fine-tuning.
+
+        *adapter_dir* is the per-project adapter location (or ``None`` when the
+        training dependencies are unavailable).  *frames_to_train* is a harvested
+        frame list when a one-time training run should happen first, else
+        ``None`` (an adapter already exists, there is too little data, or the
+        user declined).
+        """
+        try:
+            from ..ai import train
+            from ..ai.dataset import harvest_frames
+        except ImportError:
+            return None, None
+        if not train.is_train_available():
+            return None, None
+        assert self._sprite is not None
+        key = str(self._current_path) if self._current_path else "untitled"
+        adapter_dir = train.adapter_dir_for(key)
+        if train.has_trained_adapter(adapter_dir):
+            return adapter_dir, None
+        frames = harvest_frames(self._sprite)
+        if len(frames) < train.MIN_TRAIN_FRAMES:
+            return adapter_dir, None
+        answer = QMessageBox.question(
+            self,
+            "Predict Next Frame",
+            "Spriter can learn this animation once to make predictions match "
+            "your sprite. This runs in the background now; later predictions "
+            "reuse it automatically.\n\nLearn from this animation?",
+        )
+        if answer == QMessageBox.StandardButton.Yes:
+            return adapter_dir, frames
+        return adapter_dir, None
+
+    @staticmethod
+    def _diffusion_ready_adapter(adapter_dir):
+        """Return *adapter_dir* only when it holds trained weights, else ``None``."""
+        if adapter_dir is None:
+            return None
+        from ..ai import train
+
+        return adapter_dir if train.has_trained_adapter(adapter_dir) else None
+
+    def _insert_generated_frame(self, fi: int, li: int):
+        """Return an on-done callback that inserts generated *pixels* after *fi*."""
+
         def on_done(pixels) -> None:
             assert self._sprite is not None
             cmd = GenerateFrameCommand(self._sprite, fi, li, pixels)
@@ -1378,7 +1563,7 @@ class MainWindow(QMainWindow):
             self._unsaved = True
             self._refresh_undo_redo_labels()
 
-        self._run_diffusion_task(task, on_done, "Generating frame\u2026")
+        return on_done
 
     def _diffusion_unavailable_message(self) -> None:
         QMessageBox.information(

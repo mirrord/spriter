@@ -33,6 +33,9 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Frame prediction: image-to-image and ControlNet-guided next-frame generation.
+# ControlNet itself is provided by ``diffusers`` (StableDiffusionControlNet*),
+# so no extra package is required beyond this list.
 diffusion = [
   "torch>=2.0",
   "diffusers>=0.27",
@@ -40,6 +43,12 @@ diffusion = [
   "accelerate>=0.27",
   "huggingface_hub>=0.20",
   "safetensors>=0.4",
+]
+# Automatic per-project fine-tuning (LoRA) of the next-frame predictor.  Builds
+# on the ``diffusion`` extra and adds the PEFT/LoRA tooling.
+train = [
+  "spriter[diffusion]",
+  "peft>=0.10",
 ]
 
 [project.scripts]

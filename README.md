@@ -51,6 +51,28 @@ install the `train` extra (it includes everything in `diffusion`):
 pip install spriter[train]
 ```
 
+### GPU acceleration
+
+Diffusion automatically runs on an NVIDIA GPU (CUDA) or Apple Silicon (MPS)
+when one is available, falling back to the CPU otherwise. The device in use is
+shown in **Diffusion → Model Info**.
+
+The default `torch` wheel from PyPI is **CPU-only**. To use an NVIDIA GPU,
+install a CUDA build of PyTorch from the official index that matches your
+driver, for example:
+
+```console
+pip install torch --index-url https://download.pytorch.org/whl/cu124
+```
+
+Then verify it with:
+
+```console
+python -c "import torch; print(torch.cuda.is_available())"
+```
+
+Apple Silicon (MPS) is supported by the standard `torch` wheel — no extra step.
+
 ## Usage
 
 Launch the GUI:
@@ -101,7 +123,7 @@ main()
 With the `diffusion` extra installed, the **Diffusion** menu offers:
 
 - **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file (Stable Diffusion 1.x/2.x and SDXL are auto-detected).
-- **Select ControlNet…** — point Spriter at a local ControlNet model directory used to guide next-frame prediction. A scribble or lineart ControlNet for SD 1.x works well (e.g. `lllyasviel/control_v11p_sd15_scribble`); download it with **Download Model…** or place it on disk.
+- **Select ControlNet…** — point Spriter at a local ControlNet used to guide next-frame prediction. Both formats are accepted: a diffusers-format directory (`config.json` + weights) or an original single-file checkpoint (`.safetensors`/`.ckpt`) alongside its `config.yaml` (the A1111/ControlNet-v1 layout). A scribble or lineart ControlNet for SD 1.x works well (e.g. `lllyasviel/control_v11p_sd15_scribble`); download it with **Download Model…** or place it on disk.
 - **Select IP-Adapter…** — *(optional)* point Spriter at an IP-Adapter weight file (e.g. `ip-adapter_sd15.safetensors` from `h94/IP-Adapter`). When set, next-frame prediction locks the sprite's identity from the current frame so the character stays consistent while the ControlNet drives the new pose.
 - **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
   (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.

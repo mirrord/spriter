@@ -1323,12 +1323,15 @@ class MainWindow(QMainWindow):
         available = (
             "Yes" if diffusion.is_available() else "No (install spriter[diffusion])"
         )
+        device_label = {"cuda": "GPU (CUDA)", "mps": "GPU (Apple MPS)", "cpu": "CPU"}
+        device = diffusion.active_device()
         lines = [
             f"Path: {info['path']}",
             f"Type: {info['type']}",
             f"Exists: {'Yes' if info['exists'] else 'No'}",
             f"Size: {self._format_size(info['size_bytes'])}",
             f"Dependencies installed: {available}",
+            f"Compute device: {device_label.get(device, device)}",
         ]
         QMessageBox.information(self, "Model Info", "\n".join(lines))
 

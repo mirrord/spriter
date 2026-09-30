@@ -35,7 +35,9 @@ dependencies = [
 [project.optional-dependencies]
 # Frame prediction: image-to-image and ControlNet-guided next-frame generation.
 # ControlNet itself is provided by ``diffusers`` (StableDiffusionControlNet*),
-# so no extra package is required beyond this list.
+# so no extra package is required beyond this list.  NOTE: the PyPI ``torch``
+# wheel is CPU-only; for NVIDIA GPUs install a CUDA build from
+# https://download.pytorch.org/whl (see the GPU acceleration section in README).
 diffusion = [
   "torch>=2.0",
   "diffusers>=0.27",
@@ -43,6 +45,7 @@ diffusion = [
   "accelerate>=0.27",
   "huggingface_hub>=0.20",
   "safetensors>=0.4",
+  "PyYAML>=6.0",
 ]
 # Automatic per-project fine-tuning (LoRA) of the next-frame predictor.  Builds
 # on the ``diffusion`` extra and adds the PEFT/LoRA tooling.

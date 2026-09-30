@@ -117,12 +117,31 @@ def download_model(repo_id: str, dest_dir: str | Path) -> Path:
 
 
 def _select_device_and_dtype() -> tuple[str, Any]:
-    """Return the best available device and matching torch dtype."""
+    """Return the best available device and matching torch dtype.
+
+    Prefers CUDA (fp16), then Apple MPS (fp32), then CPU (fp32).  fp16 is only
+    used on CUDA where it is both fast and well supported.
+    """
     import torch  # type: ignore[import-not-found]
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    dtype = torch.float16 if device == "cuda" else torch.float32
-    return device, dtype
+    if torch.cuda.is_available():
+        return "cuda", torch.float16
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available():
+        return "mps", torch.float32
+    return "cpu", torch.float32
+
+
+def active_device() -> str:
+    """Return the device diffusion will run on: ``"cuda"``, ``"mps"`` or ``"cpu"``.
+
+    Returns ``"cpu"`` when the optional dependencies are absent, so callers can
+    display it without gating on :func:`is_available`.
+    """
+    if not is_available():
+        return "cpu"
+    device, _ = _select_device_and_dtype()
+    return device
 
 
 def _dtype_kwargs(dtype: Any) -> dict[str, Any]:
@@ -369,6 +388,138 @@ def generate(
     return np.array(out_image, dtype=np.uint8)
 
 
+# Single-file ControlNet checkpoint extensions, preferred order (safetensors first).
+_CONTROLNET_CKPT_SUFFIXES = (".safetensors", ".ckpt", ".pth", ".pt", ".bin")
+
+
+def _sibling_controlnet_yaml(folder: Path) -> Path | None:
+    """Return the original-format ``config.yaml`` in *folder*, if any."""
+    for name in ("config.yaml", "config.yml"):
+        candidate = folder / name
+        if candidate.is_file():
+            return candidate
+    for candidate in sorted(folder.glob("*.y*ml")):
+        return candidate
+    return None
+
+
+def _resolve_controlnet_source(cn_path: Path) -> tuple[Path | None, Path | None]:
+    """Classify *cn_path* as a single-file ControlNet or a diffusers directory.
+
+    Returns:
+        ``(checkpoint_file, yaml_file)`` for a single-file ControlNet (the YAML
+        may be ``None``), or ``(None, None)`` when *cn_path* is a diffusers-format
+        directory that :func:`ControlNetModel.from_pretrained` can load directly.
+    """
+    if cn_path.is_file():
+        if cn_path.suffix.lower() in _CONTROLNET_CKPT_SUFFIXES:
+            return cn_path, _sibling_controlnet_yaml(cn_path.parent)
+        return None, None
+    # A directory: diffusers format wins when a config.json is present.
+    if (cn_path / "config.json").is_file():
+        return None, None
+    checkpoints = [
+        p
+        for p in cn_path.iterdir()
+        if p.is_file() and p.suffix.lower() in _CONTROLNET_CKPT_SUFFIXES
+    ]
+    if not checkpoints:
+        return None, None
+    # Prefer safetensors, then the configured suffix order.
+    checkpoints.sort(key=lambda p: _CONTROLNET_CKPT_SUFFIXES.index(p.suffix.lower()))
+    return checkpoints[0], _sibling_controlnet_yaml(cn_path)
+
+
+def _controlnet_config_from_ldm(original_config: dict, checkpoint: Any) -> dict:
+    """Build a diffusers ControlNet config from an original LDM YAML config.
+
+    Replicates diffusers' ``create_controlnet_diffusers_config_from_ldm`` but
+    passes the checkpoint through to the UNet config builder, working around a
+    diffusers bug where that argument is dropped (raising ``missing 1 required
+    positional argument: 'checkpoint'``).
+    """
+    from diffusers.loaders.single_file_utils import (  # type: ignore[import-not-found]
+        create_unet_diffusers_config_from_ldm,
+        set_image_size,
+    )
+
+    image_size = set_image_size(checkpoint)
+    unet = create_unet_diffusers_config_from_ldm(
+        original_config, checkpoint, image_size=image_size
+    )
+    control_params = original_config["model"]["params"]["control_stage_config"][
+        "params"
+    ]
+    return {
+        "conditioning_channels": control_params["hint_channels"],
+        "in_channels": unet["in_channels"],
+        "down_block_types": unet["down_block_types"],
+        "block_out_channels": unet["block_out_channels"],
+        "layers_per_block": unet["layers_per_block"],
+        "cross_attention_dim": unet["cross_attention_dim"],
+        "attention_head_dim": unet["attention_head_dim"],
+        "use_linear_projection": unet["use_linear_projection"],
+        "class_embed_type": unet["class_embed_type"],
+        "addition_embed_type": unet["addition_embed_type"],
+        "addition_time_embed_dim": unet["addition_time_embed_dim"],
+        "projection_class_embeddings_input_dim": unet[
+            "projection_class_embeddings_input_dim"
+        ],
+        "transformer_layers_per_block": unet["transformer_layers_per_block"],
+    }
+
+
+def _load_controlnet_from_original(
+    checkpoint_file: Path, yaml_file: Path, dtype: Any
+) -> Any:
+    """Load a single-file ControlNet using its original ``config.yaml``.
+
+    This is fully offline: the diffusers config is derived from the YAML rather
+    than downloaded from the Hub (which the stock single-file loader attempts).
+    """
+    import yaml as pyyaml
+    from diffusers import ControlNetModel  # type: ignore[import-not-found]
+    from diffusers.loaders.single_file_utils import (  # type: ignore[import-not-found]
+        convert_controlnet_checkpoint,
+    )
+
+    checkpoint = _load_checkpoint_state_dict(checkpoint_file)
+    with open(yaml_file, encoding="utf-8") as handle:
+        original_config = pyyaml.safe_load(handle)
+    config = _controlnet_config_from_ldm(original_config, checkpoint)
+    converted = convert_controlnet_checkpoint(checkpoint, config)
+    model = ControlNetModel.from_config(config)
+    model.load_state_dict(converted, strict=False)
+    return model.to(dtype)
+
+
+def _load_checkpoint_state_dict(checkpoint_file: Path) -> Any:
+    """Load a ``.safetensors`` or torch checkpoint into a flat state dict."""
+    if checkpoint_file.suffix.lower() == ".safetensors":
+        from safetensors.torch import load_file  # type: ignore[import-not-found]
+
+        return load_file(str(checkpoint_file))
+    import torch  # type: ignore[import-not-found]
+
+    state = torch.load(str(checkpoint_file), map_location="cpu", weights_only=True)
+    return state.get("state_dict", state) if isinstance(state, dict) else state
+
+
+def _load_controlnet_model(cn_path: Path, dtype: Any) -> Any:
+    """Load a ControlNet from a diffusers directory or an original single file."""
+    from diffusers import ControlNetModel  # type: ignore[import-not-found]
+
+    checkpoint_file, yaml_file = _resolve_controlnet_source(cn_path)
+    if checkpoint_file is None:
+        return ControlNetModel.from_pretrained(str(cn_path), **_dtype_kwargs(dtype))
+    if yaml_file is not None:
+        return _load_controlnet_from_original(checkpoint_file, yaml_file, dtype)
+    # Single-file checkpoint without a YAML: let diffusers infer the config.
+    return ControlNetModel.from_single_file(
+        str(checkpoint_file), **_dtype_kwargs(dtype)
+    )
+
+
 def load_controlnet_pipeline(
     model_path: str | Path,
     controlnet_path: str | Path,
@@ -385,10 +536,17 @@ def load_controlnet_pipeline(
     ControlNet img2img pipeline is a different class); an SDXL base model should
     use the plain :func:`generate` restyle path instead.
 
+    The ControlNet may be either a diffusers-format directory (``config.json`` +
+    weights) or an original single-file checkpoint (``.safetensors``/``.ckpt``)
+    accompanied by a ``config.yaml`` (the A1111/ControlNet-v1 distribution
+    format); both are loaded transparently.
+
     Args:
         model_path: Path to a diffusers model directory or a single
             ``.safetensors`` SD checkpoint.
-        controlnet_path: Path to a local ControlNet model directory.
+        controlnet_path: Path to a local ControlNet: a diffusers-format
+            directory, a single-file checkpoint, or a directory holding a
+            single-file checkpoint plus its ``config.yaml``.
         disable_safety_checker: When ``True`` (default) the NSFW safety checker
             is not loaded, avoiding false positives on pixel-art content.
         adapter_path: Optional directory holding a trained LoRA adapter that
@@ -414,11 +572,10 @@ def load_controlnet_pipeline(
 
     device, dtype = _select_device_and_dtype()
     from diffusers import (  # type: ignore[import-not-found]
-        ControlNetModel,
         StableDiffusionControlNetImg2ImgPipeline,
     )
 
-    controlnet = ControlNetModel.from_pretrained(str(cn_path), **_dtype_kwargs(dtype))
+    controlnet = _load_controlnet_model(cn_path, dtype)
     safety_kwargs: dict[str, Any] = {}
     if disable_safety_checker:
         safety_kwargs["safety_checker"] = None

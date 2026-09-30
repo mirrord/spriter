@@ -204,6 +204,29 @@ class TestDiffusionBackend:
 
         assert isinstance(diffusion.is_available(), bool)
 
+    def test_active_device_returns_known_value(self):
+        from spriter.ai import diffusion
+
+        assert diffusion.active_device() in {"cuda", "mps", "cpu"}
+
+    def test_active_device_cpu_when_unavailable(self):
+        from spriter.ai import diffusion
+
+        with patch.object(diffusion, "is_available", return_value=False):
+            assert diffusion.active_device() == "cpu"
+
+    def test_active_device_prefers_cuda(self):
+        import sys
+
+        from spriter.ai import diffusion
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = True
+        with patch.object(diffusion, "is_available", return_value=True), patch.dict(
+            sys.modules, {"torch": fake_torch}
+        ):
+            assert diffusion.active_device() == "cuda"
+
     def test_download_model_requires_dependencies(self):
         from spriter.ai import diffusion
 
@@ -711,6 +734,98 @@ class TestNextFrameControlNet:
 
         pipeline = pipe_cls.from_pretrained.return_value
         pipeline.load_ip_adapter.assert_not_called()
+
+    def test_load_controlnet_pipeline_single_file_yaml(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "model"
+        model_dir.mkdir()
+        # Original single-file ControlNet: a .safetensors + config.yaml, no config.json.
+        cn_dir = tmp_path / "controlnet"
+        cn_dir.mkdir()
+        (cn_dir / "control.safetensors").write_bytes(b"x")
+        (cn_dir / "config.yaml").write_text("model: {}\n")
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        cn_cls = fake_diffusers.ControlNetModel
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "is_available", lambda: True)
+        sentinel = MagicMock(name="controlnet")
+        with patch.object(
+            diffusion, "_load_controlnet_from_original", return_value=sentinel
+        ) as from_original:
+            diffusion.load_controlnet_pipeline(model_dir, cn_dir)
+
+        from_original.assert_called_once()
+        args, _ = from_original.call_args
+        assert args[0].name == "control.safetensors"
+        assert args[1].name == "config.yaml"
+        # The diffusers directory loader is bypassed for single-file ControlNets.
+        cn_cls.from_pretrained.assert_not_called()
+
+
+class TestControlNetSourceResolution:
+    def test_diffusers_directory_with_config_json(self, tmp_path):
+        from spriter.ai import diffusion
+
+        d = tmp_path / "cn"
+        d.mkdir()
+        (d / "config.json").write_text("{}")
+        (d / "diffusion_pytorch_model.safetensors").write_bytes(b"x")
+        assert diffusion._resolve_controlnet_source(d) == (None, None)
+
+    def test_single_file_dir_with_yaml(self, tmp_path):
+        from spriter.ai import diffusion
+
+        d = tmp_path / "cn"
+        d.mkdir()
+        ckpt = d / "control.safetensors"
+        ckpt.write_bytes(b"x")
+        yaml = d / "config.yaml"
+        yaml.write_text("model: {}\n")
+        assert diffusion._resolve_controlnet_source(d) == (ckpt, yaml)
+
+    def test_single_file_dir_without_yaml(self, tmp_path):
+        from spriter.ai import diffusion
+
+        d = tmp_path / "cn"
+        d.mkdir()
+        ckpt = d / "control.safetensors"
+        ckpt.write_bytes(b"x")
+        assert diffusion._resolve_controlnet_source(d) == (ckpt, None)
+
+    def test_single_file_path_with_sibling_yaml(self, tmp_path):
+        from spriter.ai import diffusion
+
+        ckpt = tmp_path / "control.safetensors"
+        ckpt.write_bytes(b"x")
+        yaml = tmp_path / "config.yml"
+        yaml.write_text("model: {}\n")
+        assert diffusion._resolve_controlnet_source(ckpt) == (ckpt, yaml)
+
+    def test_prefers_safetensors_over_bin(self, tmp_path):
+        from spriter.ai import diffusion
+
+        d = tmp_path / "cn"
+        d.mkdir()
+        (d / "control.bin").write_bytes(b"x")
+        safe = d / "control.safetensors"
+        safe.write_bytes(b"x")
+        checkpoint, _ = diffusion._resolve_controlnet_source(d)
+        assert checkpoint == safe
+
+    def test_empty_dir_is_treated_as_diffusers(self, tmp_path):
+        from spriter.ai import diffusion
+
+        d = tmp_path / "cn"
+        d.mkdir()
+        assert diffusion._resolve_controlnet_source(d) == (None, None)
 
 
 # ---------------------------------------------------------------------------

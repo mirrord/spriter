@@ -145,6 +145,15 @@ With the `diffusion` extra installed, the **Diffusion** menu offers:
   frames as subsequent animation/tween frames (undoable). On CUDA the model is
   loaded with CPU offload so large Wan checkpoints fit in consumer VRAM.
 
+The tool palette also has a **🎬 Sheet AI** button for **sprite-sheet
+generation by prompt**: describe an animation and pick the frame width, height
+and count. Spriter uses Wan 2.1 **text-to-video** (with the selected video model
+and optional LoRA) to render a clip, scales its frames down to your chosen
+dimensions, and drops them into a new animation timeline ready to export as a
+sprite sheet (undoable). The generation reuses the same **Select Video Model…**
+/ **Select Video LoRA…** settings — point them at a Wan text-to-video model for
+this feature.
+
 #### Automatic fine-tuning
 
 With the `train` extra installed, next-frame prediction can learn your

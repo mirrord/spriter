@@ -909,3 +909,114 @@ def _video_generation_size(
     out_h = max(mod, round((max_area * aspect) ** 0.5) // mod * mod)
     out_w = max(mod, round((max_area / aspect) ** 0.5) // mod * mod)
     return (out_w, out_h)
+
+
+def text_video_is_available() -> bool:
+    """Return ``True`` when the Wan text-to-video pipeline is importable."""
+    if not is_available():
+        return False
+    try:
+        import diffusers  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    return hasattr(diffusers, "WanPipeline")
+
+
+def _require_text_video_available() -> None:
+    if not text_video_is_available():
+        raise RuntimeError(
+            "Sprite-sheet generation requires the optional diffusion dependencies "
+            "with Wan support. Install/upgrade them with:  "
+            "pip install -U 'spriter[diffusion]'"
+        )
+
+
+def load_text_video_pipeline(
+    model_path: str | Path,
+    *,
+    lora_path: str | Path | None = None,
+) -> Any:
+    """Load a Wan 2.1 text-to-video pipeline from a local model directory.
+
+    Args:
+        model_path: Path to a local Wan 2.1 text-to-video model directory.
+        lora_path: Optional LoRA weights (file or directory) to apply.
+
+    Returns:
+        A ready-to-run Wan text-to-video pipeline on the best device, with CPU
+        offload enabled on CUDA so large models fit in limited VRAM.
+
+    Raises:
+        RuntimeError: If the optional dependencies (with Wan support) are absent.
+        FileNotFoundError: If *model_path* does not exist.
+    """
+    _require_text_video_available()
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Video model path does not exist: {path}")
+
+    import torch  # type: ignore[import-not-found]
+    from diffusers import (  # type: ignore[import-not-found]
+        AutoencoderKLWan,
+        WanPipeline,
+    )
+
+    device, _ = _select_device_and_dtype()
+    compute_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+
+    vae = AutoencoderKLWan.from_pretrained(
+        str(path), subfolder="vae", **_dtype_kwargs(torch.float32)
+    )
+    pipeline = WanPipeline.from_pretrained(
+        str(path), vae=vae, **_dtype_kwargs(compute_dtype)
+    )
+    _maybe_load_adapter(pipeline, lora_path)
+    _place_and_optimize_video(pipeline, device)
+    return pipeline
+
+
+def generate_text_video_frames(
+    pipeline: Any,
+    prompt: str,
+    *,
+    width: int,
+    height: int,
+    num_frames: int = VIDEO_DEFAULT_NUM_FRAMES,
+    steps: int = VIDEO_DEFAULT_STEPS,
+    guidance_scale: float = VIDEO_DEFAULT_GUIDANCE_SCALE,
+    negative_prompt: str = VIDEO_DEFAULT_NEGATIVE_PROMPT,
+    max_area: int = VIDEO_DEFAULT_MAX_AREA,
+) -> list[np.ndarray]:
+    """Generate a text-to-video clip and return its frames as RGBA.
+
+    The clip is generated at a resolution near *max_area* matching the
+    ``width:height`` aspect ratio; callers scale the frames down to the target
+    sprite size afterwards.
+
+    Args:
+        pipeline: A Wan text-to-video pipeline from
+            :func:`load_text_video_pipeline`.
+        prompt: Text prompt describing the animation.
+        width: Target sprite width (used for the generation aspect ratio).
+        height: Target sprite height (used for the generation aspect ratio).
+        num_frames: Requested clip length (snapped to a valid ``4k+1`` value).
+        steps: Number of denoising steps.
+        guidance_scale: Classifier-free guidance scale.
+        negative_prompt: What to avoid in the generation.
+        max_area: Target pixel budget for generation.
+
+    Returns:
+        A list of ``H×W×4`` ``uint8`` RGBA frames at generation resolution.
+    """
+    gen_w, gen_h = _video_generation_size(pipeline, (width, height), max_area)
+    result = pipeline(
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=gen_h,
+        width=gen_w,
+        num_frames=valid_num_frames(num_frames),
+        guidance_scale=guidance_scale,
+        num_inference_steps=steps,
+    )
+    frames = result.frames[0]
+    return [np.array(frame.convert("RGBA"), dtype=np.uint8) for frame in frames]

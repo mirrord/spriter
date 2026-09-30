@@ -947,6 +947,84 @@ class TestVideoBackend:
         pipeline = wan_cls.from_pretrained.return_value
         pipeline.load_lora_weights.assert_called_once_with(str(lora))
 
+    def test_text_video_is_available_true_with_wan(self, monkeypatch):
+        import sys
+        import types
+
+        from spriter.ai import diffusion
+
+        fake = types.SimpleNamespace(WanPipeline=object)
+        monkeypatch.setitem(sys.modules, "diffusers", fake)
+        with patch.object(diffusion, "is_available", return_value=True):
+            assert diffusion.text_video_is_available() is True
+
+    def test_text_video_is_available_false_without_wan(self, monkeypatch):
+        import sys
+        import types
+
+        from spriter.ai import diffusion
+
+        fake = types.SimpleNamespace()
+        monkeypatch.setitem(sys.modules, "diffusers", fake)
+        with patch.object(diffusion, "is_available", return_value=True):
+            assert diffusion.text_video_is_available() is False
+
+    def test_generate_text_video_frames_wires_pipeline(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        images = [Image.new("RGB", (40, 40), (i, i, i)) for i in range(4)]
+        result = MagicMock()
+        result.frames = [images]
+        pipeline = MagicMock(return_value=result)
+        pipeline.vae_scale_factor_spatial = 8
+        pipeline.transformer.config.patch_size = [1, 2]
+
+        out = diffusion.generate_text_video_frames(
+            pipeline, "a knight running", width=32, height=48, num_frames=13, steps=4
+        )
+
+        pipeline.assert_called_once()
+        _, kwargs = pipeline.call_args
+        assert kwargs["prompt"] == "a knight running"
+        assert kwargs["num_frames"] == 13
+        assert kwargs["num_inference_steps"] == 4
+        assert "image" not in kwargs  # text-to-video has no init image
+        assert kwargs["width"] % 16 == 0 and kwargs["height"] % 16 == 0
+        # Portrait target (48>32) yields a portrait generation size.
+        assert kwargs["height"] > kwargs["width"]
+        assert len(out) == 4
+
+    def test_load_text_video_pipeline_wires_pretrained_and_lora(
+        self, tmp_path, monkeypatch
+    ):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "wan_t2v"
+        model_dir.mkdir()
+        lora = tmp_path / "lora.safetensors"
+        lora.write_bytes(b"x")
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        wan_cls = fake_diffusers.WanPipeline
+        vae_cls = fake_diffusers.AutoencoderKLWan
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setattr(diffusion, "text_video_is_available", lambda: True)
+
+        diffusion.load_text_video_pipeline(model_dir, lora_path=lora)
+
+        vae_cls.from_pretrained.assert_called_once()
+        wan_cls.from_pretrained.assert_called_once()
+        pipeline = wan_cls.from_pretrained.return_value
+        pipeline.load_lora_weights.assert_called_once_with(str(lora))
+
 
 class TestGenerateFramesCommand:
     def _sprite(self):
@@ -990,6 +1068,64 @@ class TestGenerateFramesCommand:
         bad = [np.zeros((4, 4, 4), dtype=np.uint8)]
         with pytest.raises(ValueError):
             GenerateFramesCommand(self._sprite(), 0, 0, bad)
+
+
+class TestGenerateAnimationCommand:
+    def _sprite(self, w=16, h=16):
+        from spriter.core.sprite import Sprite
+
+        sprite = Sprite(w, h)
+        sprite.add_layer("Layer")
+        sprite.add_frame()
+        return sprite
+
+    def _frames(self, n, w, h):
+        return [np.full((h, w, 4), 10 * (i + 1), dtype=np.uint8) for i in range(n)]
+
+    def test_execute_adds_timeline_and_resizes_canvas(self):
+        from spriter.commands.ai_ops import GenerateAnimationCommand
+
+        sprite = self._sprite(16, 16)
+        timelines_before = sprite.timeline_count
+        frames = self._frames(3, 8, 12)
+        GenerateAnimationCommand(sprite, "Walk", frames, 8, 12).execute()
+        assert sprite.timeline_count == timelines_before + 1
+        assert (sprite.width, sprite.height) == (8, 12)
+        assert sprite.active_timeline_index == timelines_before
+        assert sprite.frame_count == 3
+
+    def test_undo_restores_canvas_and_removes_timeline(self):
+        from spriter.commands.ai_ops import GenerateAnimationCommand
+
+        sprite = self._sprite(16, 16)
+        timelines_before = sprite.timeline_count
+        cmd = GenerateAnimationCommand(sprite, "Walk", self._frames(3, 8, 12), 8, 12)
+        cmd.execute()
+        cmd.undo()
+        assert sprite.timeline_count == timelines_before
+        assert (sprite.width, sprite.height) == (16, 16)
+
+    def test_execute_without_resize_when_dims_match(self):
+        from spriter.commands.ai_ops import GenerateAnimationCommand
+
+        sprite = self._sprite(16, 16)
+        frames = self._frames(2, 16, 16)
+        GenerateAnimationCommand(sprite, "Idle", frames, 16, 16).execute()
+        assert (sprite.width, sprite.height) == (16, 16)
+        assert sprite.frame_count == 2
+
+    def test_rejects_empty(self):
+        from spriter.commands.ai_ops import GenerateAnimationCommand
+
+        with pytest.raises(ValueError):
+            GenerateAnimationCommand(self._sprite(), "x", [], 8, 8)
+
+    def test_rejects_mismatched_shape(self):
+        from spriter.commands.ai_ops import GenerateAnimationCommand
+
+        bad = [np.zeros((4, 4, 4), dtype=np.uint8)]
+        with pytest.raises(ValueError):
+            GenerateAnimationCommand(self._sprite(), "x", bad, 8, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -1318,6 +1454,67 @@ class TestDiffusionMenu:
             win._diffusion_animate_from_frame()
 
         assert win._sprite.frame_count == before + 4  # 5 generated minus the first
+        win._unsaved = False
+        win.close()
+
+    def test_toolbar_has_sprite_sheet_button(self, qapp):
+        from spriter.ui.toolbar import ToolBar
+
+        bar = ToolBar()
+        assert hasattr(bar, "sprite_sheet_requested")
+        assert bar._sheet_button.text() == "🎬 Sheet AI"
+
+    def test_generate_sheet_shows_message_when_unavailable(self, qapp):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        with patch.object(
+            diffusion, "text_video_is_available", return_value=False
+        ), patch("spriter.ui.main_window.QMessageBox.information") as info:
+            win._diffusion_generate_sheet()
+        info.assert_called_once()
+        win.close()
+
+    def test_generate_sheet_full_flow_adds_timeline(self, qapp, tmp_path):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow, _DiffusionWorker
+
+        win = MainWindow()
+        win._unsaved = False
+        assert win._sprite is not None
+        model_dir = tmp_path / "wan_t2v"
+        model_dir.mkdir()
+        win._settings.diffusion_video_model_path = str(model_dir)
+        timelines_before = win._sprite.timeline_count
+
+        frames = []
+        for _ in range(5):
+            frame = np.zeros((40, 40, 4), dtype=np.uint8)
+            frame[..., :3] = 255
+            frame[10:30, 10:30] = (255, 0, 0, 255)
+            frames.append(frame)
+
+        with patch.object(MainWindow, "_rebuild_ui", lambda self: None), patch.object(
+            _DiffusionWorker, "start", _DiffusionWorker.run
+        ), patch.object(
+            diffusion, "text_video_is_available", return_value=True
+        ), patch.object(
+            diffusion, "load_text_video_pipeline", return_value=MagicMock()
+        ), patch.object(
+            diffusion, "generate_text_video_frames", return_value=frames
+        ), patch(
+            "spriter.ui.main_window.QInputDialog.getText",
+            return_value=("run cycle", True),
+        ), patch(
+            "spriter.ui.main_window.QInputDialog.getInt",
+            side_effect=[(8, True), (12, True), (5, True)],
+        ):
+            win._diffusion_generate_sheet()
+
+        assert win._sprite.timeline_count == timelines_before + 1
+        assert (win._sprite.width, win._sprite.height) == (8, 12)
         win._unsaved = False
         win.close()
 

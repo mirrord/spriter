@@ -58,6 +58,7 @@ class ToolBar(QWidget):
     brush_size_changed = pyqtSignal(int)
     opacity_changed = pyqtSignal(int)
     tolerance_changed = pyqtSignal(int)
+    sprite_sheet_requested = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -89,6 +90,16 @@ class ToolBar(QWidget):
         sep = QFrame(self)
         sep.setFrameShape(QFrame.Shape.HLine)
         root.addWidget(sep)
+
+        # AI sprite-sheet generation (not a drawing tool; fires its own signal).
+        self._sheet_button = QToolButton(self)
+        self._sheet_button.setText("🎬 Sheet AI")
+        self._sheet_button.setToolTip("Generate a sprite sheet from a text prompt")
+        self._sheet_button.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self._sheet_button.clicked.connect(self.sprite_sheet_requested)
+        root.addWidget(self._sheet_button)
 
         # Options strip
         root.addWidget(self._make_option_row("Brush", self._make_brush_spin()))

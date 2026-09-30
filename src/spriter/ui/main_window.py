@@ -45,7 +45,11 @@ from PyQt6.QtWidgets import (
 
 from spriter.__about__ import __version__
 
-from ..commands.ai_ops import GenerateFrameCommand, GenerateFramesCommand
+from ..commands.ai_ops import (
+    GenerateAnimationCommand,
+    GenerateFrameCommand,
+    GenerateFramesCommand,
+)
 from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -325,6 +329,7 @@ class MainWindow(QMainWindow):
         self._toolbar.tool_changed.connect(self._on_tool_changed)
         self._toolbar.brush_size_changed.connect(self._on_brush_size_changed)
         self._toolbar.opacity_changed.connect(self._on_opacity_changed)
+        self._toolbar.sprite_sheet_requested.connect(self._diffusion_generate_sheet)
         tool_dock = QDockWidget("Tools", self)
         tool_dock.setWidget(self._toolbar)
         tool_dock.setObjectName("tools_dock")
@@ -1685,6 +1690,84 @@ class MainWindow(QMainWindow):
             self._refresh_undo_redo_labels()
 
         self._run_diffusion_task(task, on_done, "Generating animation\u2026")
+
+    def _diffusion_generate_sheet(self) -> None:
+        if self._sprite is None:
+            return
+        from ..ai import diffusion
+        from ..ai.postprocess import prepare_video_frames
+
+        if not diffusion.text_video_is_available():
+            self._diffusion_unavailable_message()
+            return
+        model_path = self._settings.diffusion_video_model_path
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.information(
+                self,
+                "Generate Sprite Sheet",
+                "No video model selected. Use Diffusion \u2192 Select Video Model "
+                "first (a Wan text-to-video model).",
+            )
+            return
+
+        prompt, ok = QInputDialog.getText(
+            self, "Generate Sprite Sheet", "Describe the animation:"
+        )
+        if not ok or not prompt.strip():
+            return
+        width, ok = QInputDialog.getInt(
+            self, "Generate Sprite Sheet", "Frame width:", self._sprite.width, 1, 1024
+        )
+        if not ok:
+            return
+        height, ok = QInputDialog.getInt(
+            self,
+            "Generate Sprite Sheet",
+            "Frame height:",
+            self._sprite.height,
+            1,
+            1024,
+        )
+        if not ok:
+            return
+        count, ok = QInputDialog.getInt(
+            self,
+            "Generate Sprite Sheet",
+            "Number of frames:",
+            diffusion.VIDEO_DEFAULT_NUM_FRAMES,
+            2,
+            257,
+        )
+        if not ok:
+            return
+
+        lora = self._settings.diffusion_video_lora_path or None
+        name = prompt.strip()[:40] or "Generated"
+        li = self._layers_panel.active_layer if self._layers_panel else 0
+
+        def task():
+            pipeline = diffusion.load_text_video_pipeline(model_path, lora_path=lora)
+            frames = diffusion.generate_text_video_frames(
+                pipeline, prompt.strip(), width=width, height=height, num_frames=count
+            )
+            return prepare_video_frames(frames, width, height)
+
+        def on_done(frames) -> None:
+            assert self._sprite is not None
+            if not frames:
+                QMessageBox.information(
+                    self, "Generate Sprite Sheet", "No frames were generated."
+                )
+                return
+            cmd = GenerateAnimationCommand(
+                self._sprite, name, frames, width, height, li
+            )
+            self._stack.push(cmd)
+            self._rebuild_ui()
+            self._unsaved = True
+            self._refresh_undo_redo_labels()
+
+        self._run_diffusion_task(task, on_done, "Generating sprite sheet\u2026")
 
     def _diffusion_unavailable_message(self) -> None:
         QMessageBox.information(

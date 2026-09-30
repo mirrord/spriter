@@ -117,6 +117,18 @@ class TestPostprocess:
         out = prepare_generated_frame(arr, 32, 24)
         assert out.shape == (24, 32, 4)
 
+    def test_prepare_video_frames_returns_canvas_sized(self):
+        from spriter.ai.postprocess import prepare_video_frames
+
+        frames = []
+        for _ in range(3):
+            frame = np.zeros((20, 30, 4), dtype=np.uint8)
+            frame[..., 3] = 255
+            frames.append(frame)
+        out = prepare_video_frames(frames, 16, 12)
+        assert len(out) == 3
+        assert all(f.shape == (12, 16, 4) for f in out)
+
     def test_validate_rejects_non_rgba(self):
         from spriter.ai.postprocess import remove_flat_background
 
@@ -829,6 +841,158 @@ class TestControlNetSourceResolution:
 
 
 # ---------------------------------------------------------------------------
+# Image-to-video (Wan 2.1)
+# ---------------------------------------------------------------------------
+
+
+class TestVideoBackend:
+    def test_valid_num_frames_snaps_to_4k_plus_1(self):
+        from spriter.ai import diffusion
+
+        assert diffusion.valid_num_frames(17) == 17
+        assert diffusion.valid_num_frames(16) == 13
+        assert diffusion.valid_num_frames(1) == 5
+        assert diffusion.valid_num_frames(81) == 81
+
+    def test_video_generation_size_snaps_to_mod_and_aspect(self):
+        from spriter.ai import diffusion
+
+        # A plain object forces the mod fallback (16).
+        w, h = diffusion._video_generation_size(object(), (64, 32), 480 * 832)
+        assert w % 16 == 0 and h % 16 == 0
+        assert w >= 16 and h >= 16
+        assert w > h  # landscape source stays landscape
+
+    def test_video_is_available_false_when_diffusion_unavailable(self):
+        from spriter.ai import diffusion
+
+        with patch.object(diffusion, "is_available", return_value=False):
+            assert diffusion.video_is_available() is False
+
+    def test_video_is_available_true_with_wan(self, monkeypatch):
+        import sys
+        import types
+
+        from spriter.ai import diffusion
+
+        fake = types.SimpleNamespace(WanImageToVideoPipeline=object)
+        monkeypatch.setitem(sys.modules, "diffusers", fake)
+        with patch.object(diffusion, "is_available", return_value=True):
+            assert diffusion.video_is_available() is True
+
+    def test_video_is_available_false_without_wan(self, monkeypatch):
+        import sys
+        import types
+
+        from spriter.ai import diffusion
+
+        fake = types.SimpleNamespace()
+        monkeypatch.setitem(sys.modules, "diffusers", fake)
+        with patch.object(diffusion, "is_available", return_value=True):
+            assert diffusion.video_is_available() is False
+
+    def test_generate_video_frames_wires_pipeline(self):
+        from PIL import Image
+
+        from spriter.ai import diffusion
+
+        images = [Image.new("RGB", (48, 48), (i, i, i)) for i in range(3)]
+        result = MagicMock()
+        result.frames = [images]
+        pipeline = MagicMock(return_value=result)
+        # Real values so the size math snaps to a 16-pixel multiple.
+        pipeline.vae_scale_factor_spatial = 8
+        pipeline.transformer.config.patch_size = [1, 2]
+
+        init = np.zeros((16, 16, 4), dtype=np.uint8)
+        init[..., 3] = 255
+        out = diffusion.generate_video_frames(
+            pipeline, init, "walk cycle", num_frames=13, steps=4
+        )
+
+        pipeline.assert_called_once()
+        _, kwargs = pipeline.call_args
+        assert kwargs["prompt"] == "walk cycle"
+        assert kwargs["num_frames"] == 13
+        assert kwargs["num_inference_steps"] == 4
+        assert kwargs["width"] % 16 == 0 and kwargs["height"] % 16 == 0
+        assert len(out) == 3
+        assert out[0].shape[2] == 4
+
+    def test_load_video_pipeline_wires_pretrained_and_lora(self, tmp_path, monkeypatch):
+        import sys
+
+        from spriter.ai import diffusion
+
+        model_dir = tmp_path / "wan"
+        model_dir.mkdir()
+        lora = tmp_path / "lora.safetensors"
+        lora.write_bytes(b"x")
+
+        fake_torch = MagicMock()
+        fake_torch.cuda.is_available.return_value = False
+        fake_diffusers = MagicMock()
+        wan_cls = fake_diffusers.WanImageToVideoPipeline
+        vae_cls = fake_diffusers.AutoencoderKLWan
+
+        monkeypatch.setitem(sys.modules, "torch", fake_torch)
+        monkeypatch.setitem(sys.modules, "diffusers", fake_diffusers)
+        monkeypatch.setitem(sys.modules, "transformers", MagicMock())
+        monkeypatch.setattr(diffusion, "video_is_available", lambda: True)
+
+        diffusion.load_video_pipeline(model_dir, lora_path=lora)
+
+        vae_cls.from_pretrained.assert_called_once()
+        wan_cls.from_pretrained.assert_called_once()
+        pipeline = wan_cls.from_pretrained.return_value
+        pipeline.load_lora_weights.assert_called_once_with(str(lora))
+
+
+class TestGenerateFramesCommand:
+    def _sprite(self):
+        from spriter.core.sprite import Sprite
+
+        sprite = Sprite(8, 8)
+        sprite.add_layer("Layer")
+        sprite.add_frame()
+        return sprite
+
+    def _frames(self, n):
+        return [np.full((8, 8, 4), 10 * (i + 1), dtype=np.uint8) for i in range(n)]
+
+    def test_execute_inserts_all_frames(self):
+        from spriter.commands.ai_ops import GenerateFramesCommand
+
+        sprite = self._sprite()
+        before = sprite.frame_count
+        GenerateFramesCommand(sprite, 0, 0, self._frames(3)).execute()
+        assert sprite.frame_count == before + 3
+
+    def test_undo_removes_all_inserted(self):
+        from spriter.commands.ai_ops import GenerateFramesCommand
+
+        sprite = self._sprite()
+        before = sprite.frame_count
+        cmd = GenerateFramesCommand(sprite, 0, 0, self._frames(4))
+        cmd.execute()
+        cmd.undo()
+        assert sprite.frame_count == before
+
+    def test_rejects_empty(self):
+        from spriter.commands.ai_ops import GenerateFramesCommand
+
+        with pytest.raises(ValueError):
+            GenerateFramesCommand(self._sprite(), 0, 0, [])
+
+    def test_rejects_mismatched_shape(self):
+        from spriter.commands.ai_ops import GenerateFramesCommand
+
+        bad = [np.zeros((4, 4, 4), dtype=np.uint8)]
+        with pytest.raises(ValueError):
+            GenerateFramesCommand(self._sprite(), 0, 0, bad)
+
+
+# ---------------------------------------------------------------------------
 # Settings persistence
 # ---------------------------------------------------------------------------
 
@@ -879,6 +1043,25 @@ class TestSettingsPersistence:
 
         assert Settings().diffusion_ip_adapter_path == ""
 
+    def test_diffusion_video_paths_roundtrip(self, tmp_path):
+        from spriter.core.settings import Settings
+
+        s = Settings()
+        s.diffusion_video_model_path = str(tmp_path / "wan")
+        s.diffusion_video_lora_path = str(tmp_path / "lora.safetensors")
+        path = tmp_path / "settings.json"
+        s.save(path)
+        loaded = Settings.load(path)
+        assert loaded.diffusion_video_model_path == str(tmp_path / "wan")
+        assert loaded.diffusion_video_lora_path == str(tmp_path / "lora.safetensors")
+
+    def test_diffusion_video_paths_default_empty(self):
+        from spriter.core.settings import Settings
+
+        s = Settings()
+        assert s.diffusion_video_model_path == ""
+        assert s.diffusion_video_lora_path == ""
+
 
 # ---------------------------------------------------------------------------
 # UI wiring
@@ -904,10 +1087,13 @@ class TestDiffusionMenu:
         assert "Select Model\u2026" in labels
         assert "Select ControlNet\u2026" in labels
         assert "Select IP-Adapter\u2026" in labels
+        assert "Select Video Model\u2026" in labels
+        assert "Select Video LoRA\u2026" in labels
         assert "Download Model\u2026" in labels
         assert "Model Info\u2026" in labels
         assert "Restyle Frame\u2026" in labels
         assert "Predict Next Frame\u2026" in labels
+        assert "Animate From Frame\u2026" in labels
         win.close()
 
     def test_model_info_shows_message_when_no_model(self, qapp):
@@ -1048,6 +1234,91 @@ class TestDiffusionMenu:
         ):
             win._diffusion_select_ip_adapter()
         assert win._settings.diffusion_ip_adapter_path == ip_file
+        win.close()
+
+    def test_select_video_model_saves_to_settings(self, qapp, tmp_path):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        model_dir = str(tmp_path / "wan")
+        with patch(
+            "spriter.ui.main_window.QFileDialog.getExistingDirectory",
+            return_value=model_dir,
+        ), patch("spriter.ui.main_window.QMessageBox.information"), patch(
+            "spriter.core.settings.Settings.save"
+        ):
+            win._diffusion_select_video_model()
+        assert win._settings.diffusion_video_model_path == model_dir
+        win.close()
+
+    def test_select_video_lora_saves_to_settings(self, qapp, tmp_path):
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        lora_file = str(tmp_path / "wan_lora.safetensors")
+        with patch(
+            "spriter.ui.main_window.QFileDialog.getOpenFileName",
+            return_value=(lora_file, ""),
+        ), patch("spriter.ui.main_window.QMessageBox.information"), patch(
+            "spriter.core.settings.Settings.save"
+        ):
+            win._diffusion_select_video_lora()
+        assert win._settings.diffusion_video_lora_path == lora_file
+        win.close()
+
+    def test_animate_shows_message_when_unavailable(self, qapp):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow
+
+        win = MainWindow()
+        win._unsaved = False
+        with patch.object(diffusion, "video_is_available", return_value=False), patch(
+            "spriter.ui.main_window.QMessageBox.information"
+        ) as info:
+            win._diffusion_animate_from_frame()
+        info.assert_called_once()
+        win.close()
+
+    def test_animate_full_flow_inserts_frames(self, qapp, tmp_path):
+        from spriter.ai import diffusion
+        from spriter.ui.main_window import MainWindow, _DiffusionWorker
+
+        win = MainWindow()
+        win._unsaved = False
+        assert win._sprite is not None
+        model_dir = tmp_path / "wan"
+        model_dir.mkdir()
+        win._settings.diffusion_video_model_path = str(model_dir)
+        before = win._sprite.frame_count
+
+        # Five frames with a red subject on white; the first is dropped.
+        h, w = win._sprite.height, win._sprite.width
+        frames = []
+        for _ in range(5):
+            frame = np.zeros((h, w, 4), dtype=np.uint8)
+            frame[..., :3] = 255
+            frame[h // 4 : h // 2, w // 4 : w // 2] = (255, 0, 0, 255)
+            frames.append(frame)
+
+        with patch.object(
+            _DiffusionWorker, "start", _DiffusionWorker.run
+        ), patch.object(
+            diffusion, "video_is_available", return_value=True
+        ), patch.object(
+            diffusion, "load_video_pipeline", return_value=MagicMock()
+        ), patch.object(diffusion, "generate_video_frames", return_value=frames), patch(
+            "spriter.ui.main_window.QInputDialog.getText",
+            return_value=("walk", True),
+        ), patch(
+            "spriter.ui.main_window.QInputDialog.getInt",
+            return_value=(5, True),
+        ):
+            win._diffusion_animate_from_frame()
+
+        assert win._sprite.frame_count == before + 4  # 5 generated minus the first
+        win._unsaved = False
         win.close()
 
     def test_predict_next_frame_requires_controlnet(self, qapp, tmp_path):

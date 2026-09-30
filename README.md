@@ -125,6 +125,8 @@ With the `diffusion` extra installed, the **Diffusion** menu offers:
 - **Select Model…** — point Spriter at a local diffusers model directory or a single `.safetensors` checkpoint file (Stable Diffusion 1.x/2.x and SDXL are auto-detected).
 - **Select ControlNet…** — point Spriter at a local ControlNet used to guide next-frame prediction. Both formats are accepted: a diffusers-format directory (`config.json` + weights) or an original single-file checkpoint (`.safetensors`/`.ckpt`) alongside its `config.yaml` (the A1111/ControlNet-v1 layout). A scribble or lineart ControlNet for SD 1.x works well (e.g. `lllyasviel/control_v11p_sd15_scribble`); download it with **Download Model…** or place it on disk.
 - **Select IP-Adapter…** — *(optional)* point Spriter at an IP-Adapter weight file (e.g. `ip-adapter_sd15.safetensors` from `h94/IP-Adapter`). When set, next-frame prediction locks the sprite's identity from the current frame so the character stays consistent while the ControlNet drives the new pose.
+- **Select Video Model…** — point Spriter at a local Wan 2.1 image-to-video model directory (e.g. `Wan-AI/Wan2.1-I2V-14B-480P-Diffusers`) used by **Animate From Frame**.
+- **Select Video LoRA…** — *(optional)* apply a LoRA (a `.safetensors` file or directory) on top of the video model.
 - **Download Model…** — fetch a model from the Hugging Face Hub by repo ID
   (e.g. `runwayml/stable-diffusion-v1-5`) into the local model cache.
 - **Model Info…** — show details about the currently selected model (path, type, size, and whether the optional dependencies are installed).
@@ -138,6 +140,10 @@ With the `diffusion` extra installed, the **Diffusion** menu offers:
   result advances the animation rather than merely restyling it. When an
   IP-Adapter is selected, the sprite's identity is held steady across frames.
   Requires a selected ControlNet and at least two existing frames.
+- **Animate From Frame…** — generate a short video from the current frame with
+  Wan 2.1 (image-to-video) and a motion prompt, then insert the extracted video
+  frames as subsequent animation/tween frames (undoable). On CUDA the model is
+  loaded with CPU offload so large Wan checkpoints fit in consumer VRAM.
 
 #### Automatic fine-tuning
 

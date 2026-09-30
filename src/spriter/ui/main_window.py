@@ -45,7 +45,7 @@ from PyQt6.QtWidgets import (
 
 from spriter.__about__ import __version__
 
-from ..commands.ai_ops import GenerateFrameCommand
+from ..commands.ai_ops import GenerateFrameCommand, GenerateFramesCommand
 from ..commands.base import CommandStack, CompositeCommand
 from ..commands.frame_ops import (
     AddFrameCommand,
@@ -550,6 +550,16 @@ class MainWindow(QMainWindow):
             self._diffusion_select_ip_adapter,
         )
         self._add_action(
+            diffusion_menu,
+            "Select &Video Model\u2026",
+            self._diffusion_select_video_model,
+        )
+        self._add_action(
+            diffusion_menu,
+            "Select Video &LoRA\u2026",
+            self._diffusion_select_video_lora,
+        )
+        self._add_action(
             diffusion_menu, "&Download Model\u2026", self._diffusion_download_model
         )
         self._add_action(
@@ -565,6 +575,11 @@ class MainWindow(QMainWindow):
             diffusion_menu,
             "&Predict Next Frame\u2026",
             self._diffusion_predict_next_frame,
+        )
+        self._add_action(
+            diffusion_menu,
+            "&Animate From Frame\u2026",
+            self._diffusion_animate_from_frame,
         )
 
         # ── Preferences ───────────────────────────────────────────────
@@ -1307,6 +1322,35 @@ class MainWindow(QMainWindow):
         self._settings.save()
         QMessageBox.information(self, "Diffusion", f"IP-Adapter set to:\n{path}")
 
+    def _diffusion_select_video_model(self) -> None:
+        start = self._settings.diffusion_video_model_path or str(
+            self._diffusion_models_dir()
+        )
+        path = QFileDialog.getExistingDirectory(
+            self, "Select Wan Video Model Folder", start
+        )
+        if not path:
+            return
+        self._settings.diffusion_video_model_path = path
+        self._settings.save()
+        QMessageBox.information(self, "Diffusion", f"Video model set to:\n{path}")
+
+    def _diffusion_select_video_lora(self) -> None:
+        start = self._settings.diffusion_video_lora_path or str(
+            self._diffusion_models_dir()
+        )
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Select Video LoRA Weight File",
+            start,
+            "LoRA Weights (*.safetensors *.bin *.pt);;All Files (*)",
+        )
+        if not path:
+            return
+        self._settings.diffusion_video_lora_path = path
+        self._settings.save()
+        QMessageBox.information(self, "Diffusion", f"Video LoRA set to:\n{path}")
+
     def _diffusion_model_info(self) -> None:
         from ..ai import diffusion
 
@@ -1567,6 +1611,80 @@ class MainWindow(QMainWindow):
             self._refresh_undo_redo_labels()
 
         return on_done
+
+    def _diffusion_animate_from_frame(self) -> None:
+        if self._sprite is None:
+            return
+        from ..ai import diffusion
+        from ..ai.postprocess import prepare_video_frames
+
+        if not diffusion.video_is_available():
+            self._diffusion_unavailable_message()
+            return
+        model_path = self._settings.diffusion_video_model_path
+        if not model_path or not Path(model_path).exists():
+            QMessageBox.information(
+                self,
+                "Animate From Frame",
+                "No video model selected. Use Diffusion \u2192 Select Video Model "
+                "first.",
+            )
+            return
+
+        prompt, ok = QInputDialog.getText(
+            self,
+            "Animate From Frame",
+            "Prompt describing the motion:",
+        )
+        if not ok:
+            return
+        count, ok = QInputDialog.getInt(
+            self,
+            "Animate From Frame",
+            "Number of frames to generate:",
+            diffusion.VIDEO_DEFAULT_NUM_FRAMES,
+            2,
+            257,
+        )
+        if not ok:
+            return
+
+        from ..core.compositor import composite_frame
+
+        li, fi = self._active_layer_frame()
+        init_rgba = composite_frame(self._sprite, fi)
+        canvas_w, canvas_h = self._sprite.width, self._sprite.height
+        lora = self._settings.diffusion_video_lora_path or None
+
+        def task():
+            pipeline = diffusion.load_video_pipeline(model_path, lora_path=lora)
+            frames = diffusion.generate_video_frames(
+                pipeline, init_rgba, prompt.strip(), num_frames=count
+            )
+            prepared = prepare_video_frames(frames, canvas_w, canvas_h)
+            # Drop the first frame: it mirrors the current one.
+            return prepared[1:] if len(prepared) > 1 else prepared
+
+        def on_done(frames) -> None:
+            assert self._sprite is not None
+            if not frames:
+                QMessageBox.information(
+                    self, "Animate From Frame", "No frames were generated."
+                )
+                return
+            cmd = GenerateFramesCommand(self._sprite, fi, li, frames)
+            self._stack.push(cmd)
+            new_fi = fi + 1
+            if self._canvas:
+                self._canvas.active_frame = new_fi
+                self._canvas.invalidate_cache()
+            if self._timeline:
+                self._timeline.set_active_frame(new_fi)
+                self._timeline.refresh()
+            self._unsaved = True
+            self._refresh_undo_redo_labels()
+
+        self._run_diffusion_task(task, on_done, "Generating animation\u2026")
 
     def _diffusion_unavailable_message(self) -> None:
         QMessageBox.information(

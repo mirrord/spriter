@@ -704,3 +704,208 @@ def _rgba_to_rgb_image(rgba: np.ndarray) -> Image.Image:
     fg = Image.fromarray(rgba, mode="RGBA")
     rgb.paste(fg, mask=fg.split()[3])
     return rgb
+
+
+# ---------------------------------------------------------------------------
+# Image-to-video frame generation (Wan 2.1)
+# ---------------------------------------------------------------------------
+#
+# A short clip is generated from the current frame; its frames become new
+# animation frames or in-between (tween) frames.  Wan requires ``num_frames`` of
+# the form 4k+1 and generates at a pixel budget (``max_area``) not a fixed size.
+
+VIDEO_DEFAULT_NUM_FRAMES = 17
+VIDEO_DEFAULT_STEPS = 30
+VIDEO_DEFAULT_GUIDANCE_SCALE = 5.0
+# Target pixel budget for generation (Wan 2.1 480p class).
+VIDEO_DEFAULT_MAX_AREA = 480 * 832
+VIDEO_DEFAULT_NEGATIVE_PROMPT = (
+    "blurry, low quality, low resolution, distorted, deformed, watermark, "
+    "text, jpeg artifacts, extra limbs, disfigured"
+)
+
+
+def video_is_available() -> bool:
+    """Return ``True`` when the Wan image-to-video pipeline is importable."""
+    if not is_available():
+        return False
+    try:
+        import diffusers  # type: ignore[import-not-found]
+    except ImportError:
+        return False
+    return hasattr(diffusers, "WanImageToVideoPipeline")
+
+
+def _require_video_available() -> None:
+    if not video_is_available():
+        raise RuntimeError(
+            "Video frame generation requires the optional diffusion dependencies "
+            "with Wan support. Install/upgrade them with:  "
+            "pip install -U 'spriter[diffusion]'"
+        )
+
+
+def load_video_pipeline(
+    model_path: str | Path,
+    *,
+    lora_path: str | Path | None = None,
+) -> Any:
+    """Load a Wan 2.1 image-to-video pipeline from a local model directory.
+
+    Args:
+        model_path: Path to a local Wan 2.1 diffusers model directory.
+        lora_path: Optional LoRA weights (file or directory) to apply.
+
+    Returns:
+        A ready-to-run Wan image-to-video pipeline on the best device, with CPU
+        offload enabled on CUDA so large models fit in limited VRAM.
+
+    Raises:
+        RuntimeError: If the optional dependencies (with Wan support) are absent.
+        FileNotFoundError: If *model_path* does not exist.
+    """
+    _require_video_available()
+    path = Path(model_path)
+    if not path.exists():
+        raise FileNotFoundError(f"Video model path does not exist: {path}")
+
+    import torch  # type: ignore[import-not-found]
+    from diffusers import (  # type: ignore[import-not-found]
+        AutoencoderKLWan,
+        WanImageToVideoPipeline,
+    )
+
+    device, _ = _select_device_and_dtype()
+    # Wan recommends an fp32 VAE for stability; the transformer runs in bf16 on
+    # GPU (fp32 on CPU).
+    compute_dtype = torch.bfloat16 if device == "cuda" else torch.float32
+
+    vae = AutoencoderKLWan.from_pretrained(
+        str(path), subfolder="vae", **_dtype_kwargs(torch.float32)
+    )
+    load_kwargs: dict[str, Any] = {"vae": vae, **_dtype_kwargs(compute_dtype)}
+    image_encoder = _maybe_load_image_encoder(str(path))
+    if image_encoder is not None:
+        load_kwargs["image_encoder"] = image_encoder
+
+    pipeline = WanImageToVideoPipeline.from_pretrained(str(path), **load_kwargs)
+    _maybe_load_adapter(pipeline, lora_path)
+    _place_and_optimize_video(pipeline, device)
+    return pipeline
+
+
+def _maybe_load_image_encoder(model_path: str) -> Any:
+    """Return the model's CLIP vision encoder, or ``None`` if it has none."""
+    try:
+        import torch  # type: ignore[import-not-found]
+        from transformers import (  # type: ignore[import-not-found]
+            CLIPVisionModel,
+        )
+    except ImportError:
+        return None
+    try:
+        return CLIPVisionModel.from_pretrained(
+            model_path, subfolder="image_encoder", torch_dtype=torch.float32
+        )
+    except (OSError, ValueError):
+        return None
+
+
+def _place_and_optimize_video(pipeline: Any, device: str) -> None:
+    """Place *pipeline* on *device*, enabling memory savings for large models."""
+    if device == "cuda":
+        # CPU offload keeps the ~14B Wan model within consumer VRAM while still
+        # computing on the GPU one module at a time.
+        try:
+            pipeline.enable_model_cpu_offload()
+        except (AttributeError, RuntimeError):
+            pipeline.to(device)
+    else:
+        pipeline.to(device)
+    for enable in ("enable_vae_tiling", "enable_vae_slicing"):
+        method = getattr(pipeline, enable, None)
+        if callable(method):
+            try:
+                method()
+            except (AttributeError, RuntimeError):
+                pass
+
+
+def valid_num_frames(num_frames: int) -> int:
+    """Snap *num_frames* to the nearest valid Wan length (``4k+1``, min 5)."""
+    n = max(5, int(num_frames))
+    return ((n - 1) // 4) * 4 + 1
+
+
+def generate_video_frames(
+    pipeline: Any,
+    init_rgba: np.ndarray,
+    prompt: str = "",
+    *,
+    num_frames: int = VIDEO_DEFAULT_NUM_FRAMES,
+    steps: int = VIDEO_DEFAULT_STEPS,
+    guidance_scale: float = VIDEO_DEFAULT_GUIDANCE_SCALE,
+    negative_prompt: str = VIDEO_DEFAULT_NEGATIVE_PROMPT,
+    max_area: int = VIDEO_DEFAULT_MAX_AREA,
+) -> list[np.ndarray]:
+    """Generate a short video from *init_rgba* and return its frames as RGBA.
+
+    Args:
+        pipeline: A Wan image-to-video pipeline from :func:`load_video_pipeline`.
+        init_rgba: The starting ``H×W×4`` ``uint8`` RGBA frame (transparent
+            pixels are flattened onto white).
+        prompt: Text prompt describing the desired motion.
+        num_frames: Requested clip length (snapped to a valid ``4k+1`` value).
+        steps: Number of denoising steps.
+        guidance_scale: Classifier-free guidance scale.
+        negative_prompt: What to avoid in the generation.
+        max_area: Target pixel budget; width/height derive from it and the
+            source aspect ratio.
+
+    Returns:
+        A list of ``H×W×4`` ``uint8`` RGBA frames at generation resolution (the
+        first frame closely matches *init_rgba*).
+    """
+    image = _rgba_to_rgb_image(init_rgba)
+    width, height = _video_generation_size(pipeline, image.size, max_area)
+    if (width, height) != image.size:
+        image = image.resize((width, height), Image.Resampling.LANCZOS)
+
+    result = pipeline(
+        image=image,
+        prompt=prompt,
+        negative_prompt=negative_prompt,
+        height=height,
+        width=width,
+        num_frames=valid_num_frames(num_frames),
+        guidance_scale=guidance_scale,
+        num_inference_steps=steps,
+    )
+    frames = result.frames[0]
+    return [np.array(frame.convert("RGBA"), dtype=np.uint8) for frame in frames]
+
+
+def _video_mod_value(pipeline: Any) -> int:
+    """Return the spatial size multiple the Wan pipeline requires."""
+    try:
+        patch = pipeline.transformer.config.patch_size[1]
+        return int(pipeline.vae_scale_factor_spatial * patch)
+    except (AttributeError, TypeError, IndexError):
+        return 16
+
+
+def _video_generation_size(
+    pipeline: Any, size: tuple[int, int], max_area: int
+) -> tuple[int, int]:
+    """Return a ``(width, height)`` near *max_area* matching *size*'s aspect.
+
+    Each dimension is snapped down to a multiple the Wan pipeline requires.
+    """
+    width, height = size
+    if width <= 0 or height <= 0:
+        return (16, 16)
+    aspect = height / width
+    mod = max(1, _video_mod_value(pipeline))
+    out_h = max(mod, round((max_area * aspect) ** 0.5) // mod * mod)
+    out_w = max(mod, round((max_area / aspect) ** 0.5) // mod * mod)
+    return (out_w, out_h)

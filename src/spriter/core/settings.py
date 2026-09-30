@@ -71,6 +71,10 @@ class Settings:
     diffusion_controlnet_path: str = ""
     # Filesystem path to an IP-Adapter weight file that locks sprite identity.
     diffusion_ip_adapter_path: str = ""
+    # Filesystem path to a Wan 2.1 image-to-video model directory.
+    diffusion_video_model_path: str = ""
+    # Filesystem path to a LoRA applied to the video model.
+    diffusion_video_lora_path: str = ""
 
     # ── Keybindings ──────────────────────────────────────────────────
     # Mapping from tool name → single letter shortcut
@@ -106,6 +110,8 @@ class Settings:
         self.diffusion_model_path: str = ""
         self.diffusion_controlnet_path: str = ""
         self.diffusion_ip_adapter_path: str = ""
+        self.diffusion_video_model_path: str = ""
+        self.diffusion_video_lora_path: str = ""
         self.keybindings: dict[str, str] = dict(self._DEFAULT_KEYBINDINGS)
 
     # ------------------------------------------------------------------
@@ -130,6 +136,8 @@ class Settings:
             "diffusion_model_path": self.diffusion_model_path,
             "diffusion_controlnet_path": self.diffusion_controlnet_path,
             "diffusion_ip_adapter_path": self.diffusion_ip_adapter_path,
+            "diffusion_video_model_path": self.diffusion_video_model_path,
+            "diffusion_video_lora_path": self.diffusion_video_lora_path,
             "keybindings": dict(self.keybindings),
         }
 
@@ -177,6 +185,12 @@ class Settings:
         )
         s.diffusion_ip_adapter_path = str(
             data.get("diffusion_ip_adapter_path", s.diffusion_ip_adapter_path)
+        )
+        s.diffusion_video_model_path = str(
+            data.get("diffusion_video_model_path", s.diffusion_video_model_path)
+        )
+        s.diffusion_video_lora_path = str(
+            data.get("diffusion_video_lora_path", s.diffusion_video_lora_path)
         )
         kb = data.get("keybindings")
         if isinstance(kb, dict):

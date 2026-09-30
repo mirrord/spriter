@@ -147,6 +147,45 @@ def prepare_generated_frame(
     return fit_into_canvas(cropped, canvas_width, canvas_height)
 
 
+def prepare_video_frames(
+    frames: list[np.ndarray],
+    canvas_width: int,
+    canvas_height: int,
+    *,
+    remove_bg: bool = True,
+    coverage: float = 0.5,
+) -> list[np.ndarray]:
+    """Turn generated video frames into canvas-sized sprite frames.
+
+    Unlike :func:`prepare_generated_frame`, each frame is scaled as a whole
+    rather than autocropped and re-centred, so the sprite's motion stays
+    coherent across the sequence instead of jumping around.
+
+    Args:
+        frames: Raw generated ``H×W×4`` ``uint8`` RGBA frames.
+        canvas_width: Target canvas width in pixels.
+        canvas_height: Target canvas height in pixels.
+        remove_bg: When ``True`` the detected flat background is keyed out.
+        coverage: Background-detection coverage threshold.
+
+    Returns:
+        A list of ``canvas_height×canvas_width×4`` ``uint8`` RGBA frames.
+    """
+    if canvas_width <= 0 or canvas_height <= 0:
+        raise ValueError(
+            f"Canvas size must be positive, got {canvas_width}x{canvas_height}"
+        )
+    out: list[np.ndarray] = []
+    for frame in frames:
+        _validate_rgba(frame)
+        rgba = remove_flat_background(frame, coverage=coverage) if remove_bg else frame
+        image = Image.fromarray(rgba, mode="RGBA").resize(
+            (canvas_width, canvas_height), Image.Resampling.LANCZOS
+        )
+        out.append(np.array(image, dtype=np.uint8))
+    return out
+
+
 def _validate_rgba(rgba: np.ndarray) -> None:
     if rgba.ndim != 3 or rgba.shape[2] != 4:
         raise ValueError("expected an (H, W, 4) RGBA array")

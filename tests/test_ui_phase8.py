@@ -12,12 +12,7 @@ Qt widget tests require the ``qapp`` fixture from conftest.py.
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import numpy as np
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -48,7 +43,7 @@ class TestSettings:
         assert s.default_canvas_width == 32
         assert s.default_canvas_height == 32
         assert s.max_undo_depth == 100
-        assert s.theme == "dark"
+        assert s.theme == "ember"
         assert s.recent_files == []
         assert "pencil" in s.keybindings
 
@@ -454,8 +449,6 @@ class TestCanvasSelectionIndicator:
 
     def test_paint_selection_no_crash_when_mask_is_none(self, qapp):
         """_paint_selection should be a no-op when no selection is set."""
-        from PyQt6.QtGui import QPainter
-        from PyQt6.QtCore import QPointF
 
         canvas, _ = self._make_canvas()
         canvas.show()
@@ -466,8 +459,6 @@ class TestCanvasSelectionIndicator:
     def test_paint_selection_with_rect_mask(self, qapp):
         """A committed rect selection should paint without error."""
         import numpy as np
-        from PyQt6.QtCore import QPointF
-        from PyQt6.QtGui import QPainter, QPixmap
 
         canvas, sprite = self._make_canvas()
         canvas.show()
@@ -482,7 +473,6 @@ class TestCanvasSelectionIndicator:
         """_paint_selection_preview should paint the in-progress rect without error."""
         from spriter.commands.base import CommandStack
         from spriter.tools.select import RectSelectTool
-        from spriter.ui.canvas import CanvasWidget
 
         canvas, sprite = self._make_canvas()
         canvas.show()
@@ -675,6 +665,7 @@ class TestMainWindowPhase8:
         """Accepting prefs with a new canvas size and exactly 1 frame
         immediately resizes the current canvas to match."""
         from unittest.mock import patch
+
         from spriter.ui.main_window import MainWindow
 
         w = MainWindow()
@@ -700,6 +691,7 @@ class TestMainWindowPhase8:
     def test_pref_no_canvas_resize_when_size_unchanged(self, qapp):
         """If the canvas size setting does not change, the canvas is left alone."""
         from unittest.mock import patch
+
         from spriter.ui.main_window import MainWindow
 
         w = MainWindow()
@@ -723,6 +715,7 @@ class TestMainWindowPhase8:
         """Canvas is NOT resized when the project has more than one frame,
         even if the default canvas size setting changes."""
         from unittest.mock import patch
+
         from spriter.commands.frame_ops import AddFrameCommand
         from spriter.ui.main_window import MainWindow
 
@@ -749,6 +742,7 @@ class TestMainWindowPhase8:
     def test_pref_no_canvas_resize_when_dialog_cancelled(self, qapp):
         """Cancelling the prefs dialog never resizes the canvas."""
         from unittest.mock import patch
+
         from spriter.ui.main_window import MainWindow
 
         w = MainWindow()
@@ -768,6 +762,7 @@ class TestMainWindowPhase8:
     def test_pref_resize_updates_status_bar(self, qapp):
         """After a canvas resize via prefs, the status bar reflects new size."""
         from unittest.mock import patch
+
         from spriter.ui.main_window import MainWindow
 
         w = MainWindow()

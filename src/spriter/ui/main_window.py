@@ -2388,6 +2388,14 @@ class MainWindow(QMainWindow):
         if dlg.exec():
             self._settings.save()
             self._reset_autosave_timer()
+            # Re-apply the theme live so changes are visible immediately.
+            from PyQt6.QtWidgets import QApplication
+
+            app = QApplication.instance()
+            if app is not None:
+                from . import theme as _theme
+
+                _theme.apply_theme(app, self._settings.theme)
             # Re-apply shortcut bindings.
             self._build_shortcuts()
             # QoL: if the default canvas size changed and the project has only

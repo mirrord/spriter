@@ -27,6 +27,7 @@ A pixel-art sprite editor built with Python and PyQt6. Spriter provides a focuse
 - **Recent files** — quick-open list in the File menu
 - **Drag-and-drop** — open project or image files by dropping onto the window
 - **Preferences** — persistent settings for canvas defaults, grid/checker colors, undo depth, autosave interval, theme, and customizable keybindings
+- **Themes** — a bold blue & red-orange "ember" theme (default), plus plain "dark" and "light" options, switchable in Preferences
 - **Diffusion frame prediction** *(optional)* — restyle a frame or predict the next animation frame with a local, user-selectable Hugging Face diffusers model; next-frame prediction is motion- and ControlNet-guided and can be sharpened by automatic per-project fine-tuning (see [Diffusion](#diffusion-optional))
 
 ## Installation

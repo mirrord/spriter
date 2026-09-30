@@ -122,8 +122,10 @@ class PreferencesDialog(QDialog):
         self._autosave.setValue(self._settings.autosave_interval_ms)
         form.addRow("Autosave interval (ms):", self._autosave)
 
+        from . import theme as _theme
+
         self._theme = QComboBox()
-        self._theme.addItems(["dark", "light"])
+        self._theme.addItems(_theme.THEME_NAMES)
         idx = self._theme.findText(self._settings.theme)
         if idx >= 0:
             self._theme.setCurrentIndex(idx)

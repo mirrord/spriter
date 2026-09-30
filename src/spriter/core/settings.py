@@ -50,8 +50,8 @@ class Settings:
     # Transparency checker colours
     checker_light: tuple[int, int, int] = (200, 200, 200)
     checker_dark: tuple[int, int, int] = (150, 150, 150)
-    # "dark" or "light"
-    theme: str = "dark"
+    # "ember", "dark", or "light"
+    theme: str = "ember"
 
     # ── Recent files ─────────────────────────────────────────────────
     recent_files: list[str]
@@ -102,7 +102,7 @@ class Settings:
         self.grid_color = (100, 100, 100, 140)
         self.checker_light = (200, 200, 200)
         self.checker_dark = (150, 150, 150)
-        self.theme = "dark"
+        self.theme = "ember"
         self.recent_files: list[str] = []
         self.max_recent_files = 10
         self.last_open_directory: str = ""

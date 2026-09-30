@@ -24,7 +24,14 @@ animation_changed(int)
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import QEvent, QPoint, Qt, pyqtSignal
+from PyQt6.QtCore import (
+    QEasingCurve,
+    QEvent,
+    QPoint,
+    QPropertyAnimation,
+    Qt,
+    pyqtSignal,
+)
 from PyQt6.QtGui import QColor, QImage, QPainter, QPixmap
 from PyQt6.QtWidgets import (
     QHBoxLayout,
@@ -198,6 +205,9 @@ class TimelinePanel(QWidget):
         self._drag_start_pos: QPoint | None = None
         self._dragging: bool = False
         self._drag_indicator: int | None = None  # insert-before index
+        self._home_positions: list[QPoint] = []  # cell resting positions
+        self._grab_offset_x: int = 0  # cursor-to-cell-left offset at grab
+        self._cell_anims: dict[int, QPropertyAnimation] = {}
 
         self._build_ui()
         self.refresh()
@@ -508,6 +518,7 @@ class TimelinePanel(QWidget):
     # ------------------------------------------------------------------
 
     _DRAG_THRESHOLD = 8  # Manhattan distance before drag activates
+    _ANIM_DURATION_MS = 120  # duration of the displaced-cell slide
 
     def eventFilter(self, obj, event) -> bool:  # type: ignore[override]
         """Intercept mouse events on _FrameCell widgets for drag reorder."""
@@ -534,46 +545,151 @@ class TimelinePanel(QWidget):
                     not self._dragging
                     and delta.manhattanLength() >= self._DRAG_THRESHOLD
                 ):
-                    self._dragging = True
+                    self._begin_drag(event)
                 if self._dragging:
-                    # Find the cell under the current global position.
                     local = self._strip_widget.mapFromGlobal(
                         event.globalPosition().toPoint()
                     )
-                    target = self._frame_index_at(local)
-                    if target != self._drag_indicator:
-                        self._drag_indicator = target
-                        self._update_drag_highlights()
+                    self._move_dragged_cell(local.x())
+                    hover = self._insertion_index_for_x(local.x())
+                    if hover is not None and hover != self._drag_indicator:
+                        self._drag_indicator = hover
+                        self._animate_displaced(hover)
                     return True  # consume while dragging
             return False
 
         if et == QEvent.Type.MouseButtonRelease:
             if event.button() == Qt.MouseButton.LeftButton and self._dragging:
                 src = self._drag_source
-                local = self._strip_widget.mapFromGlobal(
-                    event.globalPosition().toPoint()
-                )
-                dst = self._frame_index_at(local)
-                self._drag_source = None
-                self._drag_start_pos = None
-                self._dragging = False
-                self._drag_indicator = None
-                self._clear_drag_highlights()
+                dst = self._drag_indicator
+                if dst is None:
+                    local = self._strip_widget.mapFromGlobal(
+                        event.globalPosition().toPoint()
+                    )
+                    dst = self._frame_index_at(local)
+                self._reset_drag_state()
                 if dst is not None and src is not None and dst != src:
                     cmd = MoveFrameCommand(self._sprite, src, dst)
                     self._stack.push(cmd)
                     self._active_frame = dst
                     self.refresh()
                     self.frame_selected.emit(self._active_frame)
+                else:
+                    # No reorder: snap the lifted cell back into place.
+                    self.refresh()
                 return True  # consume the release that ended the drag
-            # Clean up state on any release
-            self._drag_source = None
-            self._drag_start_pos = None
-            self._dragging = False
-            self._drag_indicator = None
+            self._reset_drag_state()
             return False
 
         return False
+
+    # ------------------------------------------------------------------
+    # Drag geometry / animation helpers
+    # ------------------------------------------------------------------
+
+    def _begin_drag(self, event) -> None:  # type: ignore[no-untyped-def]
+        """Activate dragging: snapshot resting positions and lift the cell."""
+        self._dragging = True
+        self._home_positions = [cell.pos() for cell in self._cells]
+        cell = self._cell_for_index(self._drag_source)
+        if cell is not None:
+            local = self._strip_widget.mapFromGlobal(event.globalPosition().toPoint())
+            self._grab_offset_x = local.x() - cell.x()
+            cell.raise_()
+        self._drag_indicator = self._drag_source
+
+    def _move_dragged_cell(self, cursor_x: int) -> None:
+        """Move the lifted cell so it follows the cursor horizontally."""
+        cell = self._cell_for_index(self._drag_source)
+        if cell is None or not self._home_positions:
+            return
+        y = self._home_positions[0].y()
+        span = self._cell_span()
+        base_x = self._home_positions[0].x()
+        max_x = base_x + (len(self._cells) - 1) * span
+        new_x = max(base_x, min(max_x, cursor_x - self._grab_offset_x))
+        cell.move(new_x, y)
+
+    def _animate_displaced(self, hover: int) -> None:
+        """Slide every non-dragged cell to the slot layout for *hover*."""
+        if not self._home_positions or self._drag_source is None:
+            return
+        y = self._home_positions[0].y()
+        targets = self._compute_target_positions(self._drag_source, hover)
+        for fi, tx in targets.items():
+            cell = self._cell_for_index(fi)
+            if cell is None:
+                continue
+            existing = self._cell_anims.get(fi)
+            if existing is not None:
+                existing.stop()
+            anim = QPropertyAnimation(cell, b"pos", self)
+            anim.setDuration(self._ANIM_DURATION_MS)
+            anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+            anim.setStartValue(cell.pos())
+            anim.setEndValue(QPoint(tx, y))
+            anim.start()
+            self._cell_anims[fi] = anim
+
+    def _compute_target_positions(self, source: int, hover: int) -> dict[int, int]:
+        """Return ``frame_index -> target_x`` for the non-dragged cells.
+
+        The dragged frame *source* is reserved slot *hover*; the remaining
+        frames fill the other slots in order, opening a gap at the hover slot
+        and closing the gap left by the source.
+        """
+        if not self._home_positions:
+            return {}
+        base_x = self._home_positions[0].x()
+        span = self._cell_span()
+        n = len(self._cells)
+        hover = max(0, min(n - 1, hover))
+        targets: dict[int, int] = {}
+        slot = 0
+        for fi in range(n):
+            if fi == source:
+                continue
+            if slot == hover:
+                slot += 1
+            targets[fi] = base_x + slot * span
+            slot += 1
+        return targets
+
+    def _insertion_index_for_x(self, x: int) -> int | None:
+        """Map a cursor x (strip coords) to a target slot ``0..n-1``."""
+        if not self._home_positions:
+            return None
+        span = self._cell_span()
+        if span <= 0:
+            return None
+        base_x = self._home_positions[0].x()
+        idx = round((x - base_x) / span)
+        return max(0, min(len(self._cells) - 1, int(idx)))
+
+    def _cell_span(self) -> int:
+        """Horizontal distance between adjacent cell left edges."""
+        return _FrameCell._CELL_W + self._strip_layout.spacing()
+
+    def _cell_for_index(self, frame_index: int | None) -> _FrameCell | None:
+        """Return the cell whose ``frame_index`` matches, else ``None``."""
+        if frame_index is None:
+            return None
+        for cell in self._cells:
+            if cell.frame_index == frame_index:
+                return cell
+        return None
+
+    def _reset_drag_state(self) -> None:
+        """Stop animations and clear all transient drag state."""
+        for anim in self._cell_anims.values():
+            anim.stop()
+        self._cell_anims.clear()
+        self._drag_source = None
+        self._drag_start_pos = None
+        self._dragging = False
+        self._drag_indicator = None
+        self._home_positions = []
+        self._grab_offset_x = 0
 
     def _frame_index_at(self, strip_local: QPoint) -> int | None:
         """Return the frame index of the cell under *strip_local* (strip widget coords)."""
@@ -581,18 +697,3 @@ class TimelinePanel(QWidget):
         if isinstance(child, _FrameCell):
             return child.frame_index
         return None
-
-    def _update_drag_highlights(self) -> None:
-        """Visually highlight the drag target cell."""
-        for cell in self._cells:
-            target = self._drag_indicator
-            cell.setStyleSheet(
-                "background-color: rgb(180, 100, 30);"
-                if cell.frame_index == target and target is not None
-                else ""
-            )
-
-    def _clear_drag_highlights(self) -> None:
-        """Remove drag highlighting from all cells."""
-        for cell in self._cells:
-            cell.setStyleSheet("")

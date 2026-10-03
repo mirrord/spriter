@@ -772,7 +772,7 @@ class TestReplaceColorUI:
             def scope(self):
                 return "active"
 
-        monkeypatch.setattr(mw, "_ReplaceColorDialog", _StubDlg)
+        monkeypatch.setattr("spriter.ui.main_window_edit._ReplaceColorDialog", _StubDlg)
         win._prompt_replace_color()
         result = s.get_cel(0, 0).pixels
         assert tuple(result[0, 0]) == (0, 0, 255, 255)
@@ -830,7 +830,7 @@ class TestReplaceColorUI:
             def scope(self):
                 return "all"
 
-        monkeypatch.setattr(mw, "_ReplaceColorDialog", _StubDlg)
+        monkeypatch.setattr("spriter.ui.main_window_edit._ReplaceColorDialog", _StubDlg)
         win._prompt_replace_color()
         for li in range(win._sprite.layer_count):
             for fi in range(win._sprite.frame_count):

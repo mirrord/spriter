@@ -14,8 +14,6 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 # ---------------------------------------------------------------------------
 # Settings-level tests (no Qt required)
 # ---------------------------------------------------------------------------
@@ -153,8 +151,8 @@ class TestSettingsLastDirectory:
 
 def _make_window(tmp_path):
     """Create a MainWindow with an isolated settings file."""
-    from spriter.ui.main_window import MainWindow
     from spriter.core.settings import Settings
+    from spriter.ui.main_window import MainWindow
 
     win = MainWindow()
     win._unsaved = False
@@ -203,8 +201,8 @@ class TestDialogDirHelper:
 
 class TestOpenProjectRemembersDir:
     def test_open_via_dialog_updates_last_open_directory(self, qapp, tmp_path):
-        from spriter.io.project_io import save as save_project
         from spriter.core.sprite import Sprite
+        from spriter.io.project_io import save as save_project
 
         sprite = Sprite(8, 8)
         sprite.add_layer("L")
@@ -230,8 +228,8 @@ class TestOpenProjectRemembersDir:
             win.close()
 
     def test_open_via_recent_path_also_updates(self, qapp, tmp_path):
-        from spriter.io.project_io import save as save_project
         from spriter.core.sprite import Sprite
+        from spriter.io.project_io import save as save_project
 
         sprite = Sprite(8, 8)
         sprite.add_layer("L")
@@ -320,11 +318,9 @@ class TestImportPngRemembersDir:
                 "spriter.ui.main_window.QFileDialog.getOpenFileName",
                 return_value=(str(img_path), ""),
             ), patch(
-                "spriter.ui.main_window.import_png",
+                "spriter.ui.main_window_io.import_png",
                 side_effect=RuntimeError("stop after remember"),
-            ), patch(
-                "spriter.ui.main_window.QMessageBox.critical"
-            ):
+            ), patch("spriter.ui.main_window.QMessageBox.critical"):
                 win._import_png()
             assert Path(win._settings.last_open_directory) == sub.resolve()
             assert win._settings.last_save_directory == ""  # unaffected
@@ -347,7 +343,7 @@ class TestExportFramePngRemembersDir:
             with patch(
                 "spriter.ui.main_window.QFileDialog.getSaveFileName",
                 return_value=(str(target), ""),
-            ), patch("spriter.ui.main_window.export_frame") as mock_export:
+            ), patch("spriter.ui.main_window_io.export_frame") as mock_export:
                 win._export_frame_png()
             mock_export.assert_called_once()
             assert Path(win._settings.last_save_directory) == sub.resolve()
@@ -370,7 +366,7 @@ class TestExportAllFramesRemembersDir:
             with patch(
                 "spriter.ui.main_window.QFileDialog.getExistingDirectory",
                 return_value=str(sub),
-            ), patch("spriter.ui.main_window.export_all_frames") as mock_export:
+            ), patch("spriter.ui.main_window_io.export_all_frames") as mock_export:
                 win._export_all_frames_png()
             mock_export.assert_called_once()
             assert Path(win._settings.last_save_directory) == sub.resolve()

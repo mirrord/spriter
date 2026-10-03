@@ -32,10 +32,10 @@ class TestImportSheetPrompt:
             "spriter.ui.main_window.QMessageBox.question",
             return_value=QMessageBox.StandardButton.Yes,
         ), patch(
-            "spriter.ui.main_window.import_sheet_auto",
+            "spriter.ui.main_window_io.import_sheet_auto",
             return_value=sprite,
         ) as mock_auto, patch(
-            "spriter.ui.main_window.import_sheet"
+            "spriter.ui.main_window_io.import_sheet"
         ) as mock_grid, patch("spriter.ui.main_window.MainWindow._rebuild_ui"):
             win._import_sheet()
 
@@ -61,8 +61,8 @@ class TestImportSheetPrompt:
         ), patch(
             "spriter.ui.main_window.QInputDialog.getInt",
             side_effect=[(8, True), (8, True), (0, True)],
-        ), patch("spriter.ui.main_window.import_sheet_auto") as mock_auto, patch(
-            "spriter.ui.main_window.import_sheet",
+        ), patch("spriter.ui.main_window_io.import_sheet_auto") as mock_auto, patch(
+            "spriter.ui.main_window_io.import_sheet",
             return_value=sprite,
         ) as mock_grid, patch("spriter.ui.main_window.MainWindow._rebuild_ui"):
             win._import_sheet()
@@ -87,7 +87,7 @@ class TestImportSheetPrompt:
             "spriter.ui.main_window.QMessageBox.question",
             return_value=QMessageBox.StandardButton.Yes,
         ), patch(
-            "spriter.ui.main_window.import_sheet_auto",
+            "spriter.ui.main_window_io.import_sheet_auto",
             side_effect=ValueError("no frames"),
         ), patch("spriter.ui.main_window.QMessageBox.critical") as mock_critical:
             win._import_sheet()

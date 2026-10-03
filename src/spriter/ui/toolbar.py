@@ -59,9 +59,21 @@ class ToolBar(QWidget):
     opacity_changed = pyqtSignal(int)
     tolerance_changed = pyqtSignal(int)
     sprite_sheet_requested = pyqtSignal()
+    grid_toggled = pyqtSignal(bool)
+    fit_requested = pyqtSignal()
+    center_requested = pyqtSignal()
 
-    def __init__(self, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        parent: QWidget | None = None,
+        keybindings: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(parent)
+        if keybindings is None:
+            from spriter.core.settings import Settings
+
+            keybindings = dict(Settings._DEFAULT_KEYBINDINGS)
+        self._keybindings = keybindings
         self._current_tool: str = "pencil"
         self._buttons: dict[str, QToolButton] = {}
         self._button_group = QButtonGroup(self)
@@ -75,7 +87,7 @@ class ToolBar(QWidget):
         for name, label in _TOOLS:
             btn = QToolButton(self)
             btn.setText(label)
-            btn.setToolTip(name.capitalize())
+            btn.setToolTip(self._tool_tooltip(name))
             btn.setCheckable(True)
             btn.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
             btn.clicked.connect(lambda checked, n=name: self._on_tool_clicked(n))
@@ -101,6 +113,12 @@ class ToolBar(QWidget):
         self._sheet_button.clicked.connect(self.sprite_sheet_requested)
         root.addWidget(self._sheet_button)
 
+        # View controls (grid toggle, fit, center).
+        view_sep = QFrame(self)
+        view_sep.setFrameShape(QFrame.Shape.HLine)
+        root.addWidget(view_sep)
+        root.addWidget(self._make_view_controls())
+
         # Options strip
         root.addWidget(self._make_option_row("Brush", self._make_brush_spin()))
         root.addWidget(self._make_option_row("Opacity", self._make_opacity_slider()))
@@ -111,6 +129,40 @@ class ToolBar(QWidget):
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
+
+    def _tool_tooltip(self, name: str) -> str:
+        """Tooltip for a tool button, appending its shortcut key when known."""
+        label = name.replace("_", " ").title()
+        key = self._keybindings.get(name, "")
+        return f"{label} ({key.upper()})" if key else label
+
+    def _make_view_controls(self) -> QWidget:
+        """Build the grid/fit/center button row."""
+        row = QWidget(self)
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(2)
+
+        self._grid_button = QToolButton(row)
+        self._grid_button.setText("▦ Grid")
+        self._grid_button.setToolTip("Toggle pixel grid (Ctrl+G)")
+        self._grid_button.setCheckable(True)
+        self._grid_button.setChecked(True)
+        self._grid_button.clicked.connect(self.grid_toggled)
+        layout.addWidget(self._grid_button)
+
+        self._fit_button = QToolButton(row)
+        self._fit_button.setText("⤢ Fit")
+        self._fit_button.setToolTip("Fit canvas to window (Ctrl+Shift+H)")
+        self._fit_button.clicked.connect(lambda: self.fit_requested.emit())
+        layout.addWidget(self._fit_button)
+
+        self._center_button = QToolButton(row)
+        self._center_button.setText("⊕ Center")
+        self._center_button.setToolTip("Center the view (Ctrl+Shift+C)")
+        self._center_button.clicked.connect(lambda: self.center_requested.emit())
+        layout.addWidget(self._center_button)
+        return row
 
     @property
     def current_tool(self) -> str:

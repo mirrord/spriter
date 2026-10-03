@@ -64,6 +64,7 @@ class _ColorSwatch(QWidget):
         self._color = QColor(*color)
         self.setFixedSize(36, 36)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_tooltip()
 
     @property
     def color(self) -> QColor:
@@ -72,7 +73,12 @@ class _ColorSwatch(QWidget):
     @color.setter
     def color(self, value: QColor) -> None:
         self._color = value
+        self._update_tooltip()
         self.update()
+
+    def _update_tooltip(self) -> None:
+        c = self._color
+        self.setToolTip(f"#{c.red():02x}{c.green():02x}{c.blue():02x}")
 
     def paintEvent(self, event) -> None:  # type: ignore[override]
         from PyQt6.QtGui import QPainter

@@ -11,7 +11,7 @@ stroke the composited image cache is invalidated and the widget is repainted.
 from __future__ import annotations
 
 import numpy as np
-from PyQt6.QtCore import QLine, QPointF, Qt, QTimer, pyqtSignal
+from PyQt6.QtCore import QLine, QPointF, QRect, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QImage, QPainter, QPen, QPixmap, QWheelEvent
 from PyQt6.QtWidgets import QWidget
 
@@ -281,7 +281,30 @@ class CanvasWidget(QWidget):
         self._paint_selection(painter, offset)
         self._paint_selection_preview(painter, offset)
 
+        # Zoom-level readout in the top-right corner.
+        self._paint_zoom_label(painter)
+
         painter.end()
+
+    def _zoom_label_text(self) -> str:
+        """Zoom level as a percentage string, e.g. ``"800%"``."""
+        return f"{int(self._zoom * 100)}%"
+
+    def _paint_zoom_label(self, painter: QPainter) -> None:
+        """Draw the current zoom percentage in the top-right corner."""
+        text = self._zoom_label_text()
+        metrics = painter.fontMetrics()
+        pad = 4
+        box_w = metrics.horizontalAdvance(text) + pad * 2
+        box_h = metrics.height() + pad
+        box = QRect(self.width() - box_w - 6, 6, box_w, box_h)
+        painter.save()
+        painter.setPen(Qt.PenStyle.NoPen)
+        painter.setBrush(QColor(0, 0, 0, 140))
+        painter.drawRoundedRect(box, 4, 4)
+        painter.setPen(QColor(230, 234, 240))
+        painter.drawText(box, Qt.AlignmentFlag.AlignCenter, text)
+        painter.restore()
 
     def _paint_checkerboard(
         self, painter: QPainter, offset: QPointF, w: int, h: int

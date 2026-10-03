@@ -20,70 +20,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QUrl, pyqtSignal
+from PyQt6.QtCore import Qt, QTimer, QUrl
 from PyQt6.QtGui import QAction, QIcon, QKeySequence, QPixmap
 from PyQt6.QtWidgets import (
-    QButtonGroup,
-    QDialog,
-    QDialogButtonBox,
     QDockWidget,
-    QDoubleSpinBox,
     QFileDialog,
-    QFrame,
-    QHBoxLayout,
     QInputDialog,
     QLabel,
     QMainWindow,
     QMenu,
     QMessageBox,
-    QProgressDialog,
-    QRadioButton,
-    QStatusBar,
-    QVBoxLayout,
     QWidget,
 )
 
 from spriter.__about__ import __version__
 
-from ..commands.ai_ops import (
-    GenerateAnimationCommand,
-    GenerateFrameCommand,
-    GenerateFramesCommand,
-)
-from ..commands.base import CommandStack, CompositeCommand
-from ..commands.frame_ops import (
-    AddFrameCommand,
-    DuplicateFrameCommand,
-    RemoveFrameCommand,
-)
-from ..commands.transform import (
-    AdjustmentCommand,
-    AutocropCommand,
-    CanvasResizeCommand,
-    CropToSelectionCommand,
-    FlipCommand,
-    InvertColorsCommand,
-    OutlineCommand,
-    ReplaceColorCommand,
-    RotateCommand,
-    ScaleCommand,
-    ScaleSelectionCommand,
-    ShiftCommand,
-)
+from ..commands.base import CommandStack
 from ..core.animation import LoopMode
-from ..core.palette import Palette
 from ..core.settings import Settings
 from ..core.sprite import Sprite
-from ..io.gif_io import export_gif, import_gif
-from ..io.png_io import export_all_frames, export_frame, import_png
+from ..io.gif_io import import_gif
+from ..io.png_io import import_png
 from ..io.project_io import load as load_project
 from ..io.project_io import save as save_project
-from ..io.spritesheet import (
-    export_atlas,
-    export_sheet,
-    import_sheet,
-    import_sheet_auto,
-)
 from ..tools.contiguous_delete import ContiguousDeleteTool
 from ..tools.ellipse import EllipseTool
 from ..tools.eraser import EraserTool
@@ -98,36 +57,16 @@ from ..tools.text import TextTool
 from .canvas import CanvasWidget
 from .color_picker import ColorPicker
 from .layers_panel import LayersPanel
+from .main_window_diffusion import DiffusionMixin, _DiffusionWorker
+from .main_window_edit import EditMixin
+from .main_window_io import IOMixin
 from .preferences import PreferencesDialog
 from .preview import PreviewWindow
 from .timeline import TimelinePanel
 from .toolbar import ToolBar
 
 
-class _DiffusionWorker(QThread):
-    """Runs a blocking callable off the UI thread.
-
-    Emits :attr:`finished_ok` with the callable's result on success or
-    :attr:`failed` with the exception message on error.
-    """
-
-    finished_ok = pyqtSignal(object)
-    failed = pyqtSignal(str)
-
-    def __init__(self, fn, parent=None) -> None:
-        super().__init__(parent)
-        self._fn = fn
-
-    def run(self) -> None:
-        try:
-            result = self._fn()
-        except Exception as exc:  # surface any backend/model error to the UI
-            self.failed.emit(str(exc))
-            return
-        self.finished_ok.emit(result)
-
-
-class MainWindow(QMainWindow):
+class MainWindow(EditMixin, DiffusionMixin, IOMixin, QMainWindow):
     """Top-level application window.
 
     Args:
@@ -150,9 +89,8 @@ class MainWindow(QMainWindow):
         self._settings: Settings = Settings.load()
         self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
         self._current_path: Path | None = None
+        self._title_name: str | None = None
         self._unsaved = False
-
-        # Autosave timer
         self._autosave_timer = QTimer(self)
         self._autosave_timer.timeout.connect(self._do_autosave)
         self._reset_autosave_timer()
@@ -173,6 +111,7 @@ class MainWindow(QMainWindow):
         self._status_canvas = QLabel("")
         self._status_zoom = QLabel("100%")
         self._status_tool = QLabel("pencil")
+        self._status_layer = QLabel("")
         self._init_status_bar()
 
         # Accept file drops.
@@ -185,6 +124,32 @@ class MainWindow(QMainWindow):
         )
         self._build_menus()
         self._build_shortcuts()
+
+    @property
+    def _unsaved(self) -> bool:
+        """Whether the project has unsaved changes."""
+        return self._unsaved_flag
+
+    @_unsaved.setter
+    def _unsaved(self, value: bool) -> None:
+        self._unsaved_flag = bool(value)
+        self._update_title()
+
+    def _update_title(self) -> None:
+        """Refresh the window title, marking unsaved changes with a leading ``*``."""
+        name = self._title_name or "Untitled"
+        prefix = "*" if self._unsaved_flag else ""
+        self.setWindowTitle(f"Spriter \u2014 {prefix}{name}")
+
+    def _load_imported_sprite(self, sprite: Sprite, title_name: str) -> None:
+        """Install an imported/dropped/generated sprite as a new unsaved document."""
+        self._sprite = sprite
+        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
+        self._current_path = None
+        self._title_name = title_name
+        self._unsaved = True
+        self._rebuild_ui()
+        self._status_canvas.setText(f"{sprite.width}\u00d7{sprite.height}")
 
     # ------------------------------------------------------------------
     # Project management
@@ -202,6 +167,7 @@ class MainWindow(QMainWindow):
         self._sprite.add_frame()
         self._stack = CommandStack(max_depth=100)
         self._current_path = None
+        self._title_name = None
         self._unsaved = False
         self._preview = None  # reset preview on new project
 
@@ -235,11 +201,11 @@ class MainWindow(QMainWindow):
         self._sprite = sprite
         self._stack = CommandStack(max_depth=100)
         self._current_path = Path(path)
+        self._title_name = Path(path).name
         self._unsaved = False
         self._rebuild_ui()
         w, h = sprite.width, sprite.height
         self._status_canvas.setText(f"{w}×{h}")
-        self.setWindowTitle(f"Spriter — {Path(path).name}")
 
     def save_project(self) -> bool:
         """Save to the current path, prompting if none is set.
@@ -275,8 +241,8 @@ class MainWindow(QMainWindow):
             assert self._sprite is not None
             save_project(self._sprite, str(path))
             self._current_path = path
+            self._title_name = path.name
             self._unsaved = False
-            self.setWindowTitle(f"Spriter — {path.name}")
             self._settings.add_recent_file(str(path))
             self._settings.save()
             self._refresh_recent_menu()
@@ -325,11 +291,16 @@ class MainWindow(QMainWindow):
         )
         self._canvas.color_sampled.connect(self._on_color_sampled)
         self.setCentralWidget(self._canvas)
-        self._toolbar = ToolBar()
+        self._toolbar = ToolBar(keybindings=self._settings.keybindings)
         self._toolbar.tool_changed.connect(self._on_tool_changed)
         self._toolbar.brush_size_changed.connect(self._on_brush_size_changed)
         self._toolbar.opacity_changed.connect(self._on_opacity_changed)
+        self._toolbar.grid_toggled.connect(self._on_toolbar_grid_toggled)
+        self._toolbar.fit_requested.connect(self._fit)
+        self._toolbar.center_requested.connect(self._center_view)
         self._toolbar.sprite_sheet_requested.connect(self._diffusion_generate_sheet)
+        if hasattr(self, "_grid_action"):
+            self._toolbar._grid_button.setChecked(self._grid_action.isChecked())
         tool_dock = QDockWidget("Tools", self)
         tool_dock.setWidget(self._toolbar)
         tool_dock.setObjectName("tools_dock")
@@ -347,7 +318,7 @@ class MainWindow(QMainWindow):
         self._layers_panel = LayersPanel(self._sprite, self._stack)
         self._layers_panel.active_layer_changed.connect(self._on_active_layer_changed)
         self._layers_panel.layer_visibility_changed.connect(
-            lambda li, v: self._canvas.invalidate_cache()
+            lambda li, v: self._canvas.invalidate_cache() if self._canvas else None
         )
         self._layers_panel.layers_modified.connect(self._on_layers_modified)
         layers_dock = QDockWidget("Layers", self)
@@ -359,7 +330,7 @@ class MainWindow(QMainWindow):
         self._timeline = TimelinePanel(self._sprite, self._stack)
         self._timeline.frame_selected.connect(self._on_timeline_frame_selected)
         self._timeline.frame_duration_changed.connect(
-            lambda fi, ms: self._canvas.invalidate_cache()
+            lambda fi, ms: self._canvas.invalidate_cache() if self._canvas else None
         )
         self._timeline.animation_changed.connect(self._on_animation_changed)
         timeline_dock = QDockWidget("Timeline", self)
@@ -369,12 +340,19 @@ class MainWindow(QMainWindow):
 
         # Select the pencil tool on startup.
         self._on_tool_changed("pencil")
+        self._update_layer_status()
+
+    def _top_menu(self, title: str) -> QMenu:
+        """Add a top-level menu, narrowing the optional menu bar / menu away."""
+        mb = self.menuBar()
+        assert mb is not None
+        menu = mb.addMenu(title)
+        assert menu is not None
+        return menu
 
     def _build_menus(self) -> None:
-        mb = self.menuBar()
-
         # ── File ──────────────────────────────────────────────────────
-        file_menu = mb.addMenu("&File")
+        file_menu = self._top_menu("&File")
         self._add_action(file_menu, "&New…", self._prompt_new, "Ctrl+N")
         self._add_action(file_menu, "&Open…", self.open_project, "Ctrl+O")
         file_menu.addSeparator()
@@ -419,7 +397,7 @@ class MainWindow(QMainWindow):
         self._add_action(file_menu, "E&xit", self.close, "Ctrl+Q")
 
         # ── Edit ──────────────────────────────────────────────────────
-        edit_menu = mb.addMenu("&Edit")
+        edit_menu = self._top_menu("&Edit")
         self._undo_action = self._add_action(edit_menu, "&Undo", self._undo, "Ctrl+Z")
         self._redo_action = self._add_action(edit_menu, "&Redo", self._redo, "Ctrl+Y")
         edit_menu.addSeparator()
@@ -427,7 +405,7 @@ class MainWindow(QMainWindow):
         self._add_action(edit_menu, "Select &None", self._select_none, "Ctrl+D")
 
         # ── View ──────────────────────────────────────────────────────
-        view_menu = mb.addMenu("&View")
+        view_menu = self._top_menu("&View")
         self._add_action(view_menu, "Zoom &In", self._zoom_in, "Ctrl+=")
         self._add_action(view_menu, "Zoom &Out", self._zoom_out, "Ctrl+-")
         self._add_action(view_menu, "&Fit to Window", self._fit, "Ctrl+Shift+H")
@@ -439,7 +417,7 @@ class MainWindow(QMainWindow):
         self._grid_action.setChecked(True)
 
         # ── Layer ─────────────────────────────────────────────────────
-        layer_menu = mb.addMenu("&Layer")
+        layer_menu = self._top_menu("&Layer")
         self._add_action(layer_menu, "&Add Layer", self._add_layer, "Ctrl+Shift+N")
         self._add_action(layer_menu, "&Delete Layer", self._delete_layer)
         self._add_action(
@@ -458,7 +436,7 @@ class MainWindow(QMainWindow):
         layer_menu.addMenu(role_menu)
 
         # ── Frame ─────────────────────────────────────────────────────
-        frame_menu = mb.addMenu("Fr&ame")
+        frame_menu = self._top_menu("Fr&ame")
         self._add_action(frame_menu, "&Add Frame", self._add_frame)
         self._add_action(frame_menu, "&Delete Frame", self._delete_frame)
         self._add_action(frame_menu, "D&uplicate Frame", self._duplicate_frame)
@@ -471,7 +449,7 @@ class MainWindow(QMainWindow):
         )
 
         # ── Animation ─────────────────────────────────────────────────
-        anim_menu = mb.addMenu("&Animation")
+        anim_menu = self._top_menu("&Animation")
         self._add_action(anim_menu, "&Preview…", self._show_preview)
         anim_menu.addSeparator()
         self._add_action(
@@ -494,7 +472,7 @@ class MainWindow(QMainWindow):
         self._add_action(anim_menu, "Onion Skin &Depth\u2026", self._prompt_onion_depth)
 
         # ── Transform ─────────────────────────────────────────────────
-        xform_menu = mb.addMenu("&Transform")
+        xform_menu = self._top_menu("&Transform")
         self._add_action(xform_menu, "Flip &Horizontal", self._flip_h)
         self._add_action(xform_menu, "Flip &Vertical", self._flip_v)
         xform_menu.addSeparator()
@@ -540,7 +518,7 @@ class MainWindow(QMainWindow):
         )
 
         # ── Diffusion (optional AI frame prediction) ──────────────────
-        diffusion_menu = mb.addMenu("&Diffusion")
+        diffusion_menu = self._top_menu("&Diffusion")
         self._add_action(
             diffusion_menu, "&Select Model\u2026", self._diffusion_select_model
         )
@@ -588,11 +566,11 @@ class MainWindow(QMainWindow):
         )
 
         # ── Preferences ───────────────────────────────────────────────
-        prefs_menu = mb.addMenu("&Preferences")
+        prefs_menu = self._top_menu("&Preferences")
         self._add_action(
             prefs_menu, "&Preferences\u2026", self._open_preferences
         )  # ── Help ──────────────────────────────────────────────────────
-        help_menu = mb.addMenu("&Help")
+        help_menu = self._top_menu("&Help")
         self._add_action(help_menu, "&About…", self._show_about)
 
     def _add_action(
@@ -632,7 +610,8 @@ class MainWindow(QMainWindow):
         )
 
     def _init_status_bar(self) -> None:
-        bar: QStatusBar = self.statusBar()
+        bar = self.statusBar()
+        assert bar is not None
         bar.addWidget(QLabel("Cursor:"))
         bar.addWidget(self._status_cursor)
         bar.addWidget(QLabel("  Canvas:"))
@@ -641,6 +620,8 @@ class MainWindow(QMainWindow):
         bar.addWidget(self._status_zoom)
         bar.addWidget(QLabel("  Tool:"))
         bar.addWidget(self._status_tool)
+        bar.addWidget(QLabel("  Layer:"))
+        bar.addWidget(self._status_layer)
 
     # ------------------------------------------------------------------
     # Signal handlers
@@ -649,10 +630,24 @@ class MainWindow(QMainWindow):
     def _on_cursor_moved(self, x: int, y: int) -> None:
         self._status_cursor.setText(f"{x}, {y}")
 
+    def _tool_status_text(self, name: str) -> str:
+        """Human-readable tool name with its shortcut, e.g. ``"Pencil (B)"``."""
+        label = name.replace("_", " ").title()
+        key = self._settings.keybindings.get(name, "")
+        return f"{label} ({key.upper()})" if key else label
+
+    def _update_layer_status(self) -> None:
+        """Show the active layer's name in the status bar."""
+        if self._sprite is None or self._layers_panel is None:
+            return
+        idx = self._layers_panel.active_layer
+        layers = self._sprite.layers
+        self._status_layer.setText(layers[idx].name if 0 <= idx < len(layers) else "")
+
     def _on_tool_changed(self, name: str) -> None:
         if self._canvas is None or self._sprite is None:
             return
-        self._status_tool.setText(name)
+        self._status_tool.setText(self._tool_status_text(name))
         tool = self._make_tool(name)
         if self._color_picker:
             fg = self._color_picker.foreground
@@ -688,6 +683,7 @@ class MainWindow(QMainWindow):
             if self._canvas._tool:
                 self._canvas._tool.layer_index = layer_idx
                 self._canvas._tool.cancel()
+        self._update_layer_status()
         if self._sprite:
             self._sprite.clear_selection()
             if self._canvas:
@@ -770,1443 +766,12 @@ class MainWindow(QMainWindow):
                 self._timeline.refresh()
         self._refresh_undo_redo_labels()
 
-    def _zoom_in(self) -> None:
-        if self._canvas:
-            self._canvas._zoom_step(1)
-
-    def _zoom_out(self) -> None:
-        if self._canvas:
-            self._canvas._zoom_step(-1)
-
-    def _fit(self) -> None:
-        if self._canvas:
-            self._canvas.fit_to_window()
-
-    def _center_view(self) -> None:
-        if self._canvas:
-            self._canvas.center_view()
-
-    def _toggle_grid(self) -> None:
-        if self._canvas:
-            self._canvas.show_grid = self._grid_action.isChecked()
-            self._canvas.update()
-
-    def _add_layer(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._add_layer()
-
-    def _delete_layer(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._remove_layer()
-
-    def _duplicate_layer(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._duplicate_layer()
-
-    def _merge_down(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._merge_down()
-
-    def _flatten(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._flatten()
-
-    def _rename_layer(self) -> None:
-        if self._layers_panel:
-            self._layers_panel._rename_layer()
-
-    def _set_layer_role_foreground(self) -> None:
-        if self._layers_panel:
-            from ..core.layer import LayerRole
-
-            self._layers_panel._set_layer_role(LayerRole.FOREGROUND)
-
-    def _set_layer_role_background(self) -> None:
-        if self._layers_panel:
-            from ..core.layer import LayerRole
-
-            self._layers_panel._set_layer_role(LayerRole.BACKGROUND)
-
-    def _set_layer_role_normal(self) -> None:
-        if self._layers_panel:
-            from ..core.layer import LayerRole
-
-            self._layers_panel._set_layer_role(LayerRole.NORMAL)
-
-    def _add_frame(self) -> None:
-        if self._sprite is None:
-            return
-        cmd = AddFrameCommand(self._sprite)
-        self._stack.push(cmd)
-        if self._canvas:
-            self._canvas.invalidate_cache()
-        if self._timeline:
-            self._timeline.refresh()
-        self._refresh_undo_redo_labels()
-
-    def _delete_frame(self) -> None:
-        if self._sprite is None or self._sprite.frame_count <= 1:
-            QMessageBox.warning(
-                self, "Cannot Delete", "A sprite must have at least one frame."
-            )
-            return
-        fi = self._canvas.active_frame if self._canvas else 0
-        cmd = RemoveFrameCommand(self._sprite, fi)
-        self._stack.push(cmd)
-        new_fi = max(0, fi - 1)
-        if self._canvas:
-            self._canvas.active_frame = new_fi
-            self._canvas.invalidate_cache()
-        if self._timeline:
-            self._timeline.set_active_frame(new_fi)
-            self._timeline.refresh()
-        self._refresh_undo_redo_labels()
-
-    def _duplicate_frame(self) -> None:
-        if self._sprite is None:
-            return
-        fi = self._canvas.active_frame if self._canvas else 0
-        cmd = DuplicateFrameCommand(self._sprite, fi)
-        self._stack.push(cmd)
-        if self._canvas:
-            self._canvas.active_frame = fi + 1
-            self._canvas.invalidate_cache()
-        if self._timeline:
-            self._timeline.set_active_frame(fi + 1)
-            self._timeline.refresh()
-        self._refresh_undo_redo_labels()
-
-    def _move_frame_left(self) -> None:
-        if self._timeline:
-            self._timeline._move_frame_left()
-
-    def _move_frame_right(self) -> None:
-        if self._timeline:
-            self._timeline._move_frame_right()
-
-    def _on_timeline_frame_selected(self, frame_index: int) -> None:
-        if self._canvas:
-            self._canvas.active_frame = frame_index
-            self._canvas.invalidate_cache()
-            if self._canvas._tool:
-                self._canvas._tool.frame_index = frame_index
-
-    def _on_animation_changed(self, timeline_index: int) -> None:
-        """Handle the active animation timeline changing in the timeline panel."""
-        if self._sprite is None:
-            return
-        if self._canvas:
-            self._canvas.active_frame = 0
-            self._canvas.invalidate_cache()
-            if self._canvas._tool:
-                self._canvas._tool.frame_index = 0
-            self._canvas.update()
-        if self._preview is not None:
-            self._preview.set_sprite(self._sprite)
-
-    # ------------------------------------------------------------------
-    # Animation menu actions
-    # ------------------------------------------------------------------
-
-    def _show_preview(self) -> None:
-        if self._sprite is None:
-            return
-        if self._preview is None:
-            self._preview = PreviewWindow(self._sprite, self)
-        else:
-            self._preview.set_sprite(self._sprite)
-        self._preview.show()
-        self._preview.raise_()
-
-    def _set_loop_mode(self, mode: LoopMode) -> None:
-        if self._sprite:
-            self._sprite.animation.loop_mode = mode
-
-    def _toggle_onion_skin(self) -> None:
-        if self._canvas is None:
-            return
-        enabled = self._onion_action.isChecked()
-        self._canvas.onion_before = 1 if enabled else 0
-        self._canvas.onion_after = 1 if enabled else 0
-        self._canvas.invalidate_cache()
-
-    def _prompt_onion_depth(self) -> None:
-        if self._canvas is None:
-            return
-        before, ok1 = QInputDialog.getInt(
-            self,
-            "Onion Skin Depth",
-            "Frames before active:",
-            self._canvas.onion_before,
-            0,
-            10,
-        )
-        if not ok1:
-            return
-        after, ok2 = QInputDialog.getInt(
-            self,
-            "Onion Skin Depth",
-            "Frames after active:",
-            self._canvas.onion_after,
-            0,
-            10,
-        )
-        if ok2:
-            self._canvas.onion_before = before
-            self._canvas.onion_after = after
-            self._canvas.invalidate_cache()
-
-    # ------------------------------------------------------------------
-    # Transform menu actions
-    # ------------------------------------------------------------------
-
-    def _active_layer_frame(self):
-        li = self._layers_panel.active_layer if self._layers_panel else 0
-        fi = self._canvas.active_frame if self._canvas else 0
-        return li, fi
-
-    def _push_transform(self, cmd) -> None:
-        self._stack.push(cmd)
-        if self._canvas:
-            self._canvas.invalidate_cache()
-        if self._timeline:
-            self._timeline.refresh()
-        self._unsaved = True
-        self._refresh_undo_redo_labels()
-
-    def _flip_h(self) -> None:
-        if self._sprite is None:
-            return
-        li, fi = self._active_layer_frame()
-        self._push_transform(FlipCommand(self._sprite, li, fi, horizontal=True))
-
-    def _flip_v(self) -> None:
-        if self._sprite is None:
-            return
-        li, fi = self._active_layer_frame()
-        self._push_transform(FlipCommand(self._sprite, li, fi, horizontal=False))
-
-    def _rotate(self, angle: float) -> None:
-        if self._sprite is None:
-            return
-        li, fi = self._active_layer_frame()
-        self._push_transform(RotateCommand(self._sprite, li, fi, angle))
-
-    def _prompt_canvas_resize(self) -> None:
-        if self._sprite is None:
-            return
-        w, ok1 = QInputDialog.getInt(
-            self, "Canvas Size", "New width (px):", self._sprite.width, 1, 4096
-        )
-        if not ok1:
-            return
-        h, ok2 = QInputDialog.getInt(
-            self, "Canvas Size", "New height (px):", self._sprite.height, 1, 4096
-        )
-        if ok2:
-            self._push_transform(CanvasResizeCommand(self._sprite, w, h))
-            self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
-
-    def _prompt_scale(self) -> None:
-        if self._sprite is None:
-            return
-        w, ok1 = QInputDialog.getInt(
-            self, "Scale Image", "New width (px):", self._sprite.width, 1, 4096
-        )
-        if not ok1:
-            return
-        h, ok2 = QInputDialog.getInt(
-            self, "Scale Image", "New height (px):", self._sprite.height, 1, 4096
-        )
-        if ok2:
-            self._push_transform(ScaleCommand(self._sprite, w, h))
-            self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
-
-    def _crop_to_selection(self) -> None:
-        if self._sprite is None:
-            return
-        mask = self._sprite.selection_mask
-        if mask is None or not bool(mask.any()):
-            QMessageBox.information(
-                self,
-                "Crop to Selection",
-                "No active selection. Make a selection first.",
-            )
-            return
-        try:
-            cmd = CropToSelectionCommand(self._sprite)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Crop to Selection", str(exc))
-            return
-        self._push_transform(cmd)
-        self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
-
-    def _autocrop(self) -> None:
-        if self._sprite is None:
-            return
-        try:
-            cmd = AutocropCommand(self._sprite)
-        except ValueError as exc:
-            QMessageBox.information(self, "Autocrop", str(exc))
-            return
-        self._push_transform(cmd)
-        self._status_canvas.setText(f"{self._sprite.width}×{self._sprite.height}")
-
-    def _prompt_scale_selection(self) -> None:
-        if self._sprite is None:
-            return
-        mask = self._sprite.selection_mask
-        if mask is None or not bool(mask.any()):
-            QMessageBox.information(
-                self,
-                "Scale Selection",
-                "No active selection. Make a selection first.",
-            )
-            return
-        # Use selection bounding box as the current size baseline.
-        import numpy as _np
-
-        sel_rows = _np.any(mask, axis=1)
-        sel_cols = _np.any(mask, axis=0)
-        cur_h = int(_np.where(sel_rows)[0][-1] - _np.where(sel_rows)[0][0] + 1)
-        cur_w = int(_np.where(sel_cols)[0][-1] - _np.where(sel_cols)[0][0] + 1)
-        w, ok1 = QInputDialog.getInt(
-            self, "Scale Selection", "New width (px):", cur_w, 1, 4096
-        )
-        if not ok1:
-            return
-        h, ok2 = QInputDialog.getInt(
-            self, "Scale Selection", "New height (px):", cur_h, 1, 4096
-        )
-        if not ok2:
-            return
-        li, fi = self._active_layer_frame()
-        try:
-            cmd = ScaleSelectionCommand(self._sprite, li, fi, w, h)
-        except ValueError as exc:
-            QMessageBox.warning(self, "Scale Selection", str(exc))
-            return
-        self._push_transform(cmd)
-
-    def _prompt_shift(self) -> None:
-        if self._sprite is None:
-            return
-        dx, ok1 = QInputDialog.getInt(
-            self,
-            "Shift",
-            "Horizontal offset (px):",
-            0,
-            -self._sprite.width,
-            self._sprite.width,
-        )
-        if not ok1:
-            return
-        dy, ok2 = QInputDialog.getInt(
-            self,
-            "Shift",
-            "Vertical offset (px):",
-            0,
-            -self._sprite.height,
-            self._sprite.height,
-        )
-        if ok2:
-            li, fi = self._active_layer_frame()
-            self._push_transform(ShiftCommand(self._sprite, li, fi, dx, dy))
-
-    def _apply_outline(self) -> None:
-        if self._sprite is None:
-            return
-        li, fi = self._active_layer_frame()
-        self._push_transform(OutlineCommand(self._sprite, li, fi))
-
-    def _prompt_replace_color(self) -> None:
-        if self._sprite is None or self._color_picker is None:
-            return
-        fg = tuple(int(c) for c in self._color_picker.foreground)
-        bg = tuple(int(c) for c in self._color_picker.background)
-        if fg == bg:
-            QMessageBox.information(
-                self,
-                "Replace Color",
-                "Foreground and background colors are identical \u2014 nothing to replace.",
-            )
-            return
-        dlg = _ReplaceColorDialog(fg, bg, self._sprite, self)
-        if dlg.exec() != QDialog.DialogCode.Accepted:
-            return
-        old_color, new_color = dlg.color_pair()
-        tolerance = dlg.tolerance()
-        targets = self._scope_targets(dlg.scope())
-        _li_active, _fi_active = self._active_layer_frame()
-        cmds = [
-            ReplaceColorCommand(
-                self._sprite, li, fi, old_color, new_color, tolerance=tolerance
-            )
-            for (li, fi) in targets
-        ]
-        if not cmds:
-            return
-        if len(cmds) == 1:
-            self._push_transform(cmds[0])
-        else:
-            self._push_transform(CompositeCommand(cmds, description="Replace Color"))
-
-    def _invert_colors(self) -> None:
-        if self._sprite is None:
-            return
-        # Decide frame scope.
-        all_frames = False
-        if self._sprite.frame_count > 1:
-            choice = QMessageBox.question(
-                self,
-                "Invert Colors",
-                "This sprite has multiple frames. Invert colors on all frames?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Yes,
-            )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-            all_frames = choice == QMessageBox.StandardButton.Yes
-        # Decide layer scope.
-        all_layers = False
-        if self._sprite.layer_count > 1:
-            choice = QMessageBox.question(
-                self,
-                "Invert Colors",
-                "This sprite has multiple layers. Invert colors on all layers?",
-                QMessageBox.StandardButton.Yes
-                | QMessageBox.StandardButton.No
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Yes,
-            )
-            if choice == QMessageBox.StandardButton.Cancel:
-                return
-            all_layers = choice == QMessageBox.StandardButton.Yes
-        li_active, fi_active = self._active_layer_frame()
-        frames = range(self._sprite.frame_count) if all_frames else [fi_active]
-        layers = range(self._sprite.layer_count) if all_layers else [li_active]
-        cmds = [
-            InvertColorsCommand(self._sprite, li, fi, respect_selection=False)
-            for fi in frames
-            for li in layers
-        ]
-        if not cmds:
-            return
-        if len(cmds) == 1:
-            self._push_transform(cmds[0])
-        else:
-            self._push_transform(CompositeCommand(cmds, description="Invert Colors"))
-
-    def _invert_colors_selection(self) -> None:
-        if self._sprite is None:
-            return
-        mask = self._sprite.selection_mask
-        if mask is None or not bool(mask.any()):
-            QMessageBox.information(
-                self,
-                "Invert Colors in Selection",
-                "No active selection. Make a selection first.",
-            )
-            return
-        li, fi = self._active_layer_frame()
-        self._push_transform(
-            InvertColorsCommand(self._sprite, li, fi, respect_selection=True)
-        )
-
-    def _scope_targets(self, scope: str) -> list:
-        """Return a list of (layer_index, frame_index) for the given scope."""
-        if self._sprite is None:
-            return []
-        li, fi = self._active_layer_frame()
-        if scope == "active":
-            return [(li, fi)]
-        if scope == "frame":
-            return [(layer_idx, fi) for layer_idx in range(self._sprite.layer_count)]
-        if scope == "all":
-            return [
-                (layer_idx, frame_idx)
-                for frame_idx in range(self._sprite.frame_count)
-                for layer_idx in range(self._sprite.layer_count)
-            ]
-        return [(li, fi)]
-
-    def _prompt_adjust_brightness(self) -> None:
-        if self._sprite is None:
-            return
-        val, ok = QInputDialog.getDouble(
-            self, "Brightness", "Brightness factor (1.0 = no change):", 1.0, 0.0, 5.0, 2
-        )
-        if ok:
-            li, fi = self._active_layer_frame()
-            self._push_transform(
-                AdjustmentCommand(self._sprite, li, fi, brightness=val)
-            )
-
-    def _prompt_adjust_hue(self) -> None:
-        if self._sprite is None:
-            return
-        val, ok = QInputDialog.getDouble(
-            self, "Hue / Saturation", "Hue rotation (degrees):", 0.0, -180.0, 180.0, 1
-        )
-        if ok:
-            li, fi = self._active_layer_frame()
-            self._push_transform(AdjustmentCommand(self._sprite, li, fi, hue=val))
-
     def _show_about(self) -> None:
         QMessageBox.about(
             self,
             "About Spriter",
             "Spriter \u2014 Pixel art editor\n\nVersion " + __version__,
         )
-
-    # ------------------------------------------------------------------
-    # Diffusion (optional AI frame prediction)
-    # ------------------------------------------------------------------
-
-    def _diffusion_models_dir(self) -> Path:
-        """Default directory where downloaded models are stored."""
-        return Path.home() / ".config" / "spriter" / "models"
-
-    def _diffusion_select_model(self) -> None:
-        start = self._settings.diffusion_model_path or str(self._diffusion_models_dir())
-        choice, ok = QInputDialog.getItem(
-            self,
-            "Select Model",
-            "Model type:",
-            ["Model folder", "Single .safetensors file"],
-            0,
-            False,
-        )
-        if not ok:
-            return
-        if choice == "Single .safetensors file":
-            path, _ = QFileDialog.getOpenFileName(
-                self,
-                "Select Diffusion Model File",
-                start,
-                "Safetensors Model (*.safetensors)",
-            )
-        else:
-            path = QFileDialog.getExistingDirectory(
-                self, "Select Diffusion Model Folder", start
-            )
-        if not path:
-            return
-        self._settings.diffusion_model_path = path
-        self._settings.save()
-        QMessageBox.information(self, "Diffusion", f"Model set to:\n{path}")
-
-    def _diffusion_select_controlnet(self) -> None:
-        start = self._settings.diffusion_controlnet_path or str(
-            self._diffusion_models_dir()
-        )
-        path = QFileDialog.getExistingDirectory(
-            self, "Select ControlNet Model Folder", start
-        )
-        if not path:
-            return
-        self._settings.diffusion_controlnet_path = path
-        self._settings.save()
-        QMessageBox.information(self, "Diffusion", f"ControlNet set to:\n{path}")
-
-    def _diffusion_select_ip_adapter(self) -> None:
-        start = self._settings.diffusion_ip_adapter_path or str(
-            self._diffusion_models_dir()
-        )
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select IP-Adapter Weight File",
-            start,
-            "IP-Adapter Weights (*.safetensors *.bin)",
-        )
-        if not path:
-            return
-        self._settings.diffusion_ip_adapter_path = path
-        self._settings.save()
-        QMessageBox.information(self, "Diffusion", f"IP-Adapter set to:\n{path}")
-
-    def _diffusion_select_video_model(self) -> None:
-        start = self._settings.diffusion_video_model_path or str(
-            self._diffusion_models_dir()
-        )
-        path = QFileDialog.getExistingDirectory(
-            self, "Select Wan Video Model Folder", start
-        )
-        if not path:
-            return
-        self._settings.diffusion_video_model_path = path
-        self._settings.save()
-        QMessageBox.information(self, "Diffusion", f"Video model set to:\n{path}")
-
-    def _diffusion_select_video_lora(self) -> None:
-        start = self._settings.diffusion_video_lora_path or str(
-            self._diffusion_models_dir()
-        )
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Select Video LoRA Weight File",
-            start,
-            "LoRA Weights (*.safetensors *.bin *.pt);;All Files (*)",
-        )
-        if not path:
-            return
-        self._settings.diffusion_video_lora_path = path
-        self._settings.save()
-        QMessageBox.information(self, "Diffusion", f"Video LoRA set to:\n{path}")
-
-    def _diffusion_model_info(self) -> None:
-        from ..ai import diffusion
-
-        model_path = self._settings.diffusion_model_path
-        if not model_path:
-            QMessageBox.information(
-                self,
-                "Model Info",
-                "No diffusion model selected. Use Diffusion \u2192 Select Model "
-                "or Download Model first.",
-            )
-            return
-        info = diffusion.model_info(model_path)
-        available = (
-            "Yes" if diffusion.is_available() else "No (install spriter[diffusion])"
-        )
-        device_label = {"cuda": "GPU (CUDA)", "mps": "GPU (Apple MPS)", "cpu": "CPU"}
-        device = diffusion.active_device()
-        lines = [
-            f"Path: {info['path']}",
-            f"Type: {info['type']}",
-            f"Exists: {'Yes' if info['exists'] else 'No'}",
-            f"Size: {self._format_size(info['size_bytes'])}",
-            f"Dependencies installed: {available}",
-            f"Compute device: {device_label.get(device, device)}",
-        ]
-        QMessageBox.information(self, "Model Info", "\n".join(lines))
-
-    @staticmethod
-    def _format_size(num_bytes: int) -> str:
-        size = float(num_bytes)
-        for unit in ("B", "KB", "MB", "GB", "TB"):
-            if size < 1024.0 or unit == "TB":
-                return f"{size:.1f} {unit}" if unit != "B" else f"{int(size)} B"
-            size /= 1024.0
-        return f"{size:.1f} TB"
-
-    def _diffusion_download_model(self) -> None:
-        from ..ai import diffusion
-
-        if not diffusion.is_available():
-            self._diffusion_unavailable_message()
-            return
-        repo_id, ok = QInputDialog.getText(
-            self,
-            "Download Model",
-            "Hugging Face repo ID (e.g. runwayml/stable-diffusion-v1-5):",
-        )
-        if not ok or not repo_id.strip():
-            return
-        repo_id = repo_id.strip()
-        dest = self._diffusion_models_dir() / repo_id.replace("/", "__")
-
-        def task() -> str:
-            path = diffusion.download_model(repo_id, dest)
-            return str(path)
-
-        def on_done(result) -> None:
-            self._settings.diffusion_model_path = str(result)
-            self._settings.save()
-            QMessageBox.information(
-                self, "Download Model", f"Model downloaded to:\n{result}"
-            )
-
-        self._run_diffusion_task(task, on_done, f"Downloading {repo_id}\u2026")
-
-    def _diffusion_generate_frame(self) -> None:
-        """Backwards-compatible alias for :meth:`_diffusion_restyle_frame`."""
-        self._diffusion_restyle_frame()
-
-    def _diffusion_restyle_frame(self) -> None:
-        if self._sprite is None:
-            return
-        from ..ai import diffusion
-        from ..ai.postprocess import prepare_generated_frame
-
-        if not diffusion.is_available():
-            self._diffusion_unavailable_message()
-            return
-        model_path = self._settings.diffusion_model_path
-        if not model_path or not Path(model_path).exists():
-            QMessageBox.information(
-                self,
-                "Restyle Frame",
-                "No diffusion model selected. Use Diffusion \u2192 Select Model "
-                "or Download Model first.",
-            )
-            return
-
-        prompt, ok = QInputDialog.getText(
-            self,
-            "Restyle Frame",
-            "Optional prompt to guide the restyle:",
-        )
-        if not ok:
-            return
-
-        from ..core.compositor import composite_frame
-
-        li, fi = self._active_layer_frame()
-        init_rgba = composite_frame(self._sprite, fi)
-        canvas_w, canvas_h = self._sprite.width, self._sprite.height
-
-        def task():
-            pipeline = diffusion.load_pipeline(model_path)
-            generated = diffusion.generate(pipeline, init_rgba, prompt.strip())
-            return prepare_generated_frame(generated, canvas_w, canvas_h)
-
-        self._run_diffusion_task(
-            task, self._insert_generated_frame(fi, li), "Restyling frame\u2026"
-        )
-
-    def _diffusion_predict_next_frame(self) -> None:
-        if self._sprite is None:
-            return
-        from ..ai import diffusion
-        from ..ai.postprocess import prepare_generated_frame
-
-        if not diffusion.is_available():
-            self._diffusion_unavailable_message()
-            return
-        model_path = self._settings.diffusion_model_path
-        if not model_path or not Path(model_path).exists():
-            QMessageBox.information(
-                self,
-                "Predict Next Frame",
-                "No diffusion model selected. Use Diffusion \u2192 Select Model "
-                "or Download Model first.",
-            )
-            return
-        cn_path = self._settings.diffusion_controlnet_path
-        if not cn_path or not Path(cn_path).exists():
-            QMessageBox.information(
-                self,
-                "Predict Next Frame",
-                "Next-frame prediction needs a ControlNet model. Use Diffusion "
-                "\u2192 Select ControlNet first (or use Restyle Frame instead).",
-            )
-            return
-
-        from ..core.compositor import composite_frame
-
-        li, fi = self._active_layer_frame()
-        if fi < 1:
-            QMessageBox.information(
-                self,
-                "Predict Next Frame",
-                "Next-frame prediction needs at least two preceding frames. "
-                "Draw an earlier frame first, or use Restyle Frame.",
-            )
-            return
-
-        prompt, ok = QInputDialog.getText(
-            self,
-            "Predict Next Frame",
-            "Optional prompt to guide generation:",
-        )
-        if not ok:
-            return
-
-        context = [composite_frame(self._sprite, i) for i in (fi - 1, fi)]
-        canvas_w, canvas_h = self._sprite.width, self._sprite.height
-
-        # Automatic, per-project fine-tuning: derive the adapter location, train
-        # once on demand, and thereafter apply it without any user management.
-        adapter_dir, train_frames = self._diffusion_prepare_adapter()
-        label = (
-            "Learning animation & predicting\u2026"
-            if train_frames is not None
-            else "Predicting next frame\u2026"
-        )
-
-        # Optional IP-Adapter identity lock (holds the sprite's look).
-        ip_path = self._settings.diffusion_ip_adapter_path
-        ip_adapter = ip_path if ip_path and Path(ip_path).exists() else None
-
-        def task():
-            if train_frames is not None:
-                from ..ai import train
-
-                train.train_next_frame_predictor(model_path, train_frames, adapter_dir)
-            use_adapter = self._diffusion_ready_adapter(adapter_dir)
-            pipeline = diffusion.load_controlnet_pipeline(
-                model_path,
-                cn_path,
-                adapter_path=use_adapter,
-                ip_adapter_path=ip_adapter,
-            )
-            generated = diffusion.generate_next_frame(
-                pipeline,
-                context,
-                prompt.strip(),
-                use_ip_adapter=ip_adapter is not None,
-            )
-            return prepare_generated_frame(generated, canvas_w, canvas_h)
-
-        self._run_diffusion_task(task, self._insert_generated_frame(fi, li), label)
-
-    def _diffusion_prepare_adapter(self):
-        """Return ``(adapter_dir, frames_to_train)`` for automatic fine-tuning.
-
-        *adapter_dir* is the per-project adapter location (or ``None`` when the
-        training dependencies are unavailable).  *frames_to_train* is a harvested
-        frame list when a one-time training run should happen first, else
-        ``None`` (an adapter already exists, there is too little data, or the
-        user declined).
-        """
-        try:
-            from ..ai import train
-            from ..ai.dataset import harvest_frames
-        except ImportError:
-            return None, None
-        if not train.is_train_available():
-            return None, None
-        assert self._sprite is not None
-        key = str(self._current_path) if self._current_path else "untitled"
-        adapter_dir = train.adapter_dir_for(key)
-        if train.has_trained_adapter(adapter_dir):
-            return adapter_dir, None
-        frames = harvest_frames(self._sprite)
-        if len(frames) < train.MIN_TRAIN_FRAMES:
-            return adapter_dir, None
-        answer = QMessageBox.question(
-            self,
-            "Predict Next Frame",
-            "Spriter can learn this animation once to make predictions match "
-            "your sprite. This runs in the background now; later predictions "
-            "reuse it automatically.\n\nLearn from this animation?",
-        )
-        if answer == QMessageBox.StandardButton.Yes:
-            return adapter_dir, frames
-        return adapter_dir, None
-
-    @staticmethod
-    def _diffusion_ready_adapter(adapter_dir):
-        """Return *adapter_dir* only when it holds trained weights, else ``None``."""
-        if adapter_dir is None:
-            return None
-        from ..ai import train
-
-        return adapter_dir if train.has_trained_adapter(adapter_dir) else None
-
-    def _insert_generated_frame(self, fi: int, li: int):
-        """Return an on-done callback that inserts generated *pixels* after *fi*."""
-
-        def on_done(pixels) -> None:
-            assert self._sprite is not None
-            cmd = GenerateFrameCommand(self._sprite, fi, li, pixels)
-            self._stack.push(cmd)
-            new_fi = fi + 1
-            if self._canvas:
-                self._canvas.active_frame = new_fi
-                self._canvas.invalidate_cache()
-            if self._timeline:
-                self._timeline.set_active_frame(new_fi)
-                self._timeline.refresh()
-            self._unsaved = True
-            self._refresh_undo_redo_labels()
-
-        return on_done
-
-    def _diffusion_animate_from_frame(self) -> None:
-        if self._sprite is None:
-            return
-        from ..ai import diffusion
-        from ..ai.postprocess import prepare_video_frames
-
-        if not diffusion.video_is_available():
-            self._diffusion_unavailable_message()
-            return
-        model_path = self._settings.diffusion_video_model_path
-        if not model_path or not Path(model_path).exists():
-            QMessageBox.information(
-                self,
-                "Animate From Frame",
-                "No video model selected. Use Diffusion \u2192 Select Video Model "
-                "first.",
-            )
-            return
-
-        prompt, ok = QInputDialog.getText(
-            self,
-            "Animate From Frame",
-            "Prompt describing the motion:",
-        )
-        if not ok:
-            return
-        count, ok = QInputDialog.getInt(
-            self,
-            "Animate From Frame",
-            "Number of frames to generate:",
-            diffusion.VIDEO_DEFAULT_NUM_FRAMES,
-            2,
-            257,
-        )
-        if not ok:
-            return
-
-        from ..core.compositor import composite_frame
-
-        li, fi = self._active_layer_frame()
-        init_rgba = composite_frame(self._sprite, fi)
-        canvas_w, canvas_h = self._sprite.width, self._sprite.height
-        lora = self._settings.diffusion_video_lora_path or None
-
-        def task():
-            pipeline = diffusion.load_video_pipeline(model_path, lora_path=lora)
-            frames = diffusion.generate_video_frames(
-                pipeline, init_rgba, prompt.strip(), num_frames=count
-            )
-            prepared = prepare_video_frames(frames, canvas_w, canvas_h)
-            # Drop the first frame: it mirrors the current one.
-            return prepared[1:] if len(prepared) > 1 else prepared
-
-        def on_done(frames) -> None:
-            assert self._sprite is not None
-            if not frames:
-                QMessageBox.information(
-                    self, "Animate From Frame", "No frames were generated."
-                )
-                return
-            cmd = GenerateFramesCommand(self._sprite, fi, li, frames)
-            self._stack.push(cmd)
-            new_fi = fi + 1
-            if self._canvas:
-                self._canvas.active_frame = new_fi
-                self._canvas.invalidate_cache()
-            if self._timeline:
-                self._timeline.set_active_frame(new_fi)
-                self._timeline.refresh()
-            self._unsaved = True
-            self._refresh_undo_redo_labels()
-
-        self._run_diffusion_task(task, on_done, "Generating animation\u2026")
-
-    def _diffusion_generate_sheet(self) -> None:
-        if self._sprite is None:
-            return
-        from ..ai import diffusion
-        from ..ai.postprocess import prepare_video_frames
-
-        if not diffusion.text_video_is_available():
-            self._diffusion_unavailable_message()
-            return
-        model_path = self._settings.diffusion_video_model_path
-        if not model_path or not Path(model_path).exists():
-            QMessageBox.information(
-                self,
-                "Generate Sprite Sheet",
-                "No video model selected. Use Diffusion \u2192 Select Video Model "
-                "first (a Wan text-to-video model).",
-            )
-            return
-
-        prompt, ok = QInputDialog.getText(
-            self, "Generate Sprite Sheet", "Describe the animation:"
-        )
-        if not ok or not prompt.strip():
-            return
-        width, ok = QInputDialog.getInt(
-            self, "Generate Sprite Sheet", "Frame width:", self._sprite.width, 1, 1024
-        )
-        if not ok:
-            return
-        height, ok = QInputDialog.getInt(
-            self,
-            "Generate Sprite Sheet",
-            "Frame height:",
-            self._sprite.height,
-            1,
-            1024,
-        )
-        if not ok:
-            return
-        count, ok = QInputDialog.getInt(
-            self,
-            "Generate Sprite Sheet",
-            "Number of frames:",
-            diffusion.VIDEO_DEFAULT_NUM_FRAMES,
-            2,
-            257,
-        )
-        if not ok:
-            return
-
-        lora = self._settings.diffusion_video_lora_path or None
-        name = prompt.strip()[:40] or "Generated"
-        li = self._layers_panel.active_layer if self._layers_panel else 0
-
-        def task():
-            pipeline = diffusion.load_text_video_pipeline(model_path, lora_path=lora)
-            frames = diffusion.generate_text_video_frames(
-                pipeline, prompt.strip(), width=width, height=height, num_frames=count
-            )
-            return prepare_video_frames(frames, width, height)
-
-        def on_done(frames) -> None:
-            assert self._sprite is not None
-            if not frames:
-                QMessageBox.information(
-                    self, "Generate Sprite Sheet", "No frames were generated."
-                )
-                return
-            cmd = GenerateAnimationCommand(
-                self._sprite, name, frames, width, height, li
-            )
-            self._stack.push(cmd)
-            self._rebuild_ui()
-            self._unsaved = True
-            self._refresh_undo_redo_labels()
-
-        self._run_diffusion_task(task, on_done, "Generating sprite sheet\u2026")
-
-    def _diffusion_unavailable_message(self) -> None:
-        QMessageBox.information(
-            self,
-            "Diffusion",
-            "Diffusion features require optional dependencies.\n\n"
-            "Install them with:\n    pip install spriter[diffusion]",
-        )
-
-    def _run_diffusion_task(self, task, on_done, label: str) -> None:
-        """Run *task* in a worker thread behind an indeterminate progress dialog."""
-        progress = QProgressDialog(label, "", 0, 0, self)
-        progress.setWindowTitle("Diffusion")
-        progress.setCancelButton(None)
-        progress.setMinimumDuration(0)
-        progress.setValue(0)
-
-        worker = _DiffusionWorker(task, self)
-        # Keep a reference so the thread is not garbage-collected mid-run.
-        self._diffusion_worker = worker
-
-        def cleanup() -> None:
-            progress.close()
-            self._diffusion_worker = None
-
-        def handle_ok(result) -> None:
-            cleanup()
-            on_done(result)
-
-        def handle_err(message: str) -> None:
-            cleanup()
-            QMessageBox.critical(self, "Diffusion Error", message)
-
-        worker.finished_ok.connect(handle_ok)
-        worker.failed.connect(handle_err)
-        worker.start()
-        progress.show()
-
-    # ------------------------------------------------------------------
-    # Phase 7: Export actions
-    # ------------------------------------------------------------------
-
-    def _export_frame_png(self) -> None:
-        if self._sprite is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Frame as PNG", self._dialog_dir("save"), "PNG Images (*.png)"
-        )
-        if not path:
-            return
-        self._remember_path(path, "save")
-        fi = self._canvas.active_frame if self._canvas else 0
-        try:
-            export_frame(self._sprite, fi, path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    def _export_all_frames_png(self) -> None:
-        if self._sprite is None:
-            return
-        dir_path = QFileDialog.getExistingDirectory(
-            self, "Export All Frames — Choose Folder", self._dialog_dir("save")
-        )
-        if not dir_path:
-            return
-        self._remember_directory(dir_path, "save")
-        try:
-            export_all_frames(self._sprite, dir_path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    def _export_gif(self) -> None:
-        if self._sprite is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Animated GIF", self._dialog_dir("save"), "GIF Images (*.gif)"
-        )
-        if not path:
-            return
-        self._remember_path(path, "save")
-        try:
-            export_gif(self._sprite, path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    def _export_sheet(self) -> None:
-        if self._sprite is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export Sprite Sheet", self._dialog_dir("save"), "PNG Images (*.png)"
-        )
-        if not path:
-            return
-        self._remember_path(path, "save")
-        try:
-            export_sheet(self._sprite, path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    def _export_atlas(self) -> None:
-        if self._sprite is None:
-            return
-        sheet_path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Sprite Sheet (image)",
-            self._dialog_dir("save"),
-            "PNG Images (*.png)",
-        )
-        if not sheet_path:
-            return
-        self._remember_path(sheet_path, "save")
-        atlas_path, _ = QFileDialog.getSaveFileName(
-            self, "Export Atlas (JSON)", self._dialog_dir("save"), "JSON files (*.json)"
-        )
-        if not atlas_path:
-            return
-        self._remember_path(atlas_path, "save")
-        try:
-            export_atlas(self._sprite, sheet_path, atlas_path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    def _export_ico(self) -> None:
-        if self._sprite is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self, "Export as ICO", self._dialog_dir("save"), "Icon files (*.ico)"
-        )
-        if not path:
-            return
-        self._remember_path(path, "save")
-        fi = self._canvas.active_frame if self._canvas else 0
-        try:
-            from PIL import Image
-
-            from ..core.compositor import composite_frame
-
-            composite = composite_frame(self._sprite, fi)
-            img = Image.fromarray(composite, mode="RGBA")
-            img.save(path, format="ICO")
-        except Exception as exc:
-            QMessageBox.critical(self, "Export Error", str(exc))
-
-    # ------------------------------------------------------------------
-    # Phase 7: Import actions
-    # ------------------------------------------------------------------
-
-    def _import_png(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import PNG as Sprite",
-            self._dialog_dir("open"),
-            "Images (*.png *.bmp *.jpg *.jpeg *.webp)",
-        )
-        if not path:
-            return
-        self._remember_path(path, "open")
-        try:
-            sprite = import_png(path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Import Error", str(exc))
-            return
-        self._sprite = sprite
-        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-        self._current_path = None
-        self._unsaved = True
-        self._rebuild_ui()
-        w, h = sprite.width, sprite.height
-        self._status_canvas.setText(f"{w}\u00d7{h}")
-        self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
-
-    def _import_gif(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import GIF as Sprite",
-            self._dialog_dir("open"),
-            "Animated GIF (*.gif)",
-        )
-        if not path:
-            return
-        self._remember_path(path, "open")
-        try:
-            sprite = import_gif(path)
-        except Exception as exc:
-            QMessageBox.critical(self, "Import Error", str(exc))
-            return
-        self._sprite = sprite
-        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-        self._current_path = None
-        self._unsaved = True
-        self._rebuild_ui()
-        w, h = sprite.width, sprite.height
-        self._status_canvas.setText(f"{w}\u00d7{h}")
-        self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
-
-    def _import_sheet(self) -> None:
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import Sprite Sheet",
-            self._dialog_dir("open"),
-            "Images (*.png *.bmp *.jpg *.jpeg)",
-        )
-        if not path:
-            return
-        self._remember_path(path, "open")
-        # Multi-row sheets can be split so each row becomes its own animation.
-        split_rows = (
-            QMessageBox.question(
-                self,
-                "Import Sheet",
-                "Does each row contain a separate animation?\n\n"
-                "Choose Yes to split each row into its own animation timeline; "
-                "choose No to import all frames as a single animation.",
-            )
-            == QMessageBox.StandardButton.Yes
-        )
-        # Sheets with irregular frame spacing use contour-based auto-detection
-        # instead of a fixed grid.
-        inconsistent = (
-            QMessageBox.question(
-                self,
-                "Import Sheet",
-                "Does this sheet have inconsistent spacing between frames?\n\n"
-                "Choose Yes to auto-detect each frame and centre it in a "
-                "uniform cell; choose No to slice on a fixed grid.",
-            )
-            == QMessageBox.StandardButton.Yes
-        )
-        if inconsistent:
-            try:
-                sprite = import_sheet_auto(path, split_rows=split_rows)
-            except Exception as exc:
-                QMessageBox.critical(self, "Import Error", str(exc))
-                return
-            self._maybe_handle_background(sprite, path)
-            self._sprite = sprite
-            self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-            self._current_path = None
-            self._unsaved = True
-            self._rebuild_ui()
-            w, h = sprite.width, sprite.height
-            self._status_canvas.setText(f"{w}\u00d7{h}")
-            return
-        # Best-effort dimension estimation to pre-populate the dialogs.
-        est_w, est_h, est_pad = 16, 16, 0
-        try:
-            from ..io.spritesheet import estimate_sheet_layout
-
-            est = estimate_sheet_layout(path)
-            est_w, est_h, est_pad = est.frame_width, est.frame_height, est.padding
-        except Exception:
-            pass
-        fw, ok1 = QInputDialog.getInt(
-            self, "Import Sheet", "Frame width (px):", est_w, 1, 4096
-        )
-        if not ok1:
-            return
-        fh, ok2 = QInputDialog.getInt(
-            self, "Import Sheet", "Frame height (px):", est_h, 1, 4096
-        )
-        if not ok2:
-            return
-        pad, ok3 = QInputDialog.getInt(
-            self, "Import Sheet", "Padding (px):", est_pad, 0, 64
-        )
-        if not ok3:
-            return
-        try:
-            sprite = import_sheet(path, fw, fh, padding=pad, split_rows=split_rows)
-        except Exception as exc:
-            QMessageBox.critical(self, "Import Error", str(exc))
-            return
-        self._maybe_handle_background(sprite, path)
-        self._sprite = sprite
-        self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-        self._current_path = None
-        self._unsaved = True
-        self._rebuild_ui()
-        w, h = sprite.width, sprite.height
-        self._status_canvas.setText(f"{w}\u00d7{h}")
-
-    def _maybe_handle_background(self, sprite: Sprite, source_path: str) -> None:
-        """Detect a sheet background colour and prompt the user how to handle it."""
-        from ..io.spritesheet import (
-            detect_background_color,
-            remove_background,
-            split_background,
-        )
-
-        try:
-            color = detect_background_color(source_path)
-        except Exception:
-            color = None
-        if color is None:
-            return
-        r, g, b, _a = color
-        options = [
-            "Remove background (make transparent)",
-            "Separate background & foreground layers",
-            "Import as-is",
-        ]
-        choice, ok = QInputDialog.getItem(
-            self,
-            "Background Detected",
-            f"A background colour (RGB {r}, {g}, {b}) was detected.\n"
-            "How would you like to handle it?",
-            options,
-            0,
-            False,
-        )
-        if not ok:
-            return
-        if choice == options[0]:
-            remove_background(sprite, color)
-        elif choice == options[1]:
-            split_background(sprite, color)
-        # options[2] ("Import as-is") leaves the sprite unchanged.
-
-    # ------------------------------------------------------------------
-    # Palette import / export
-    # ------------------------------------------------------------------
-
-    def _import_palette(self) -> None:
-        """Import a palette file (.pal / .gpl / .hex / .txt) into the colour picker."""
-        if self._color_picker is None:
-            return
-        path, _ = QFileDialog.getOpenFileName(
-            self,
-            "Import Palette",
-            self._dialog_dir("open"),
-            "Palette files (*.pal *.gpl *.hex *.txt);;All files (*)",
-        )
-        if not path:
-            return
-        self._remember_path(path, "open")
-        suffix = Path(path).suffix.lower()
-        try:
-            if suffix == ".gpl":
-                palette = Palette.from_gpl(path)
-            elif suffix in (".hex", ".txt"):
-                palette = Palette.from_hex_list(path)
-            else:
-                palette = Palette.from_jasc(path)
-        except Exception as exc:
-            QMessageBox.critical(
-                self, "Import Error", f"Could not load palette:\n{exc}"
-            )
-            return
-        self._color_picker.load_palette(list(palette))
-
-    def _export_palette(self) -> None:
-        """Export the current palette grid to a file (.pal / .gpl / .hex)."""
-        if self._color_picker is None:
-            return
-        path, _ = QFileDialog.getSaveFileName(
-            self,
-            "Export Palette",
-            self._dialog_dir("save"),
-            "JASC-PAL (*.pal);;GIMP GPL (*.gpl);;Hex list (*.hex)",
-        )
-        if not path:
-            return
-        self._remember_path(path, "save")
-        suffix = Path(path).suffix.lower()
-        palette = Palette(self._color_picker._palette_colors)
-        try:
-            if suffix == ".gpl":
-                palette.to_gpl(path)
-            elif suffix == ".hex":
-                palette.to_hex_list(path)
-            else:
-                palette.to_jasc(path)
-        except Exception as exc:
-            QMessageBox.critical(
-                self, "Export Error", f"Could not save palette:\n{exc}"
-            )
-
-    # ------------------------------------------------------------------
-    # Phase 7: Copy / Paste
-    # ------------------------------------------------------------------
-
-    def _copy_selection(self) -> None:
-        """Copy the active cel (or selection) to the clipboard as a PNG image."""
-        if self._sprite is None:
-            return
-
-        import numpy as np
-        from PyQt6.QtGui import QImage
-        from PyQt6.QtWidgets import QApplication
-
-        from ..core.compositor import composite_frame
-
-        fi = self._canvas.active_frame if self._canvas else 0
-        composite = composite_frame(self._sprite, fi)
-
-        if self._sprite.selection_mask is not None:
-            # Zero out pixels outside the selection for copy.
-            masked = composite.copy()
-            masked[~self._sprite.selection_mask] = 0
-            composite = masked
-
-        h, w = composite.shape[:2]
-        arr = np.ascontiguousarray(composite)
-        qi = QImage(arr.data, w, h, w * 4, QImage.Format.Format_RGBA8888).copy()
-        QApplication.clipboard().setImage(qi)
-
-    def _paste_clipboard(self) -> None:
-        """Paste clipboard image onto the active layer / frame."""
-        if self._sprite is None:
-            return
-        import numpy as np
-        from PyQt6.QtWidgets import QApplication
-
-        qi = QApplication.clipboard().image()
-        if qi.isNull():
-            return
-        # Convert QImage to numpy RGBA.
-        qi = qi.convertToFormat(qi.Format.Format_RGBA8888)
-        w, h = qi.width(), qi.height()
-        ptr = qi.bits()
-        ptr.setsize(h * w * 4)
-        arr = np.frombuffer(ptr, dtype=np.uint8).reshape((h, w, 4)).copy()
-
-        # Resize to canvas size if needed.
-        if w != self._sprite.width or h != self._sprite.height:
-            from PIL import Image
-
-            img = Image.fromarray(arr, mode="RGBA")
-            img = img.resize(
-                (self._sprite.width, self._sprite.height), Image.Resampling.NEAREST
-            )
-            arr = np.array(img, dtype=np.uint8)
-
-        li = self._layers_panel.active_layer if self._layers_panel else 0
-        fi = self._canvas.active_frame if self._canvas else 0
-        self._sprite.set_cel_pixels(li, fi, arr)
-        if self._canvas:
-            self._canvas.invalidate_cache()
-        self._unsaved = True
 
     # ------------------------------------------------------------------
     # File-dialog default location
@@ -2318,14 +883,7 @@ class MainWindow(QMainWindow):
             except Exception as exc:
                 QMessageBox.critical(self, "Drop Error", str(exc))
                 return
-            self._sprite = sprite
-            self._stack = CommandStack(max_depth=self._settings.max_undo_depth)
-            self._current_path = None
-            self._unsaved = True
-            self._rebuild_ui()
-            w, h = sprite.width, sprite.height
-            self._status_canvas.setText(f"{w}\u00d7{h}")
-            self.setWindowTitle(f"Spriter \u2014 {Path(path).name}")
+            self._load_imported_sprite(sprite, Path(path).name)
 
     # ------------------------------------------------------------------
     # Phase 8: Symmetry mode
@@ -2407,6 +965,8 @@ class MainWindow(QMainWindow):
                 and self._sprite.frame_count == 1
                 and (new_w != old_w or new_h != old_h)
             ):
+                from ..commands.transform import CanvasResizeCommand
+
                 self._push_transform(CanvasResizeCommand(self._sprite, new_w, new_h))
                 self._status_canvas.setText(
                     f"{self._sprite.width}\u00d7{self._sprite.height}"
@@ -2432,7 +992,7 @@ class MainWindow(QMainWindow):
             "text": TextTool,
         }
         cls = tools.get(name, PencilTool)
-        return cls(self._sprite, self._stack)
+        return cls(self._sprite, self._stack)  # type: ignore[abstract]
 
     # ------------------------------------------------------------------
     # Close guard
@@ -2456,121 +1016,3 @@ class MainWindow(QMainWindow):
                 event.ignore()
                 return
         event.accept()
-
-
-# ---------------------------------------------------------------------------
-# Replace Color dialog
-# ---------------------------------------------------------------------------
-
-
-class _ReplaceColorDialog(QDialog):
-    """Dialog for the Transform > Replace Color action.
-
-    Shows the current foreground and background swatches, lets the user pick
-    direction (FG\u2192BG or BG\u2192FG), the cel scope, and a tolerance.
-    """
-
-    def __init__(
-        self,
-        fg: tuple,
-        bg: tuple,
-        sprite: Sprite,
-        parent: QWidget | None = None,
-    ) -> None:
-        super().__init__(parent)
-        self.setWindowTitle("Replace Color")
-        self._fg = tuple(int(c) for c in fg)
-        self._bg = tuple(int(c) for c in bg)
-
-        layout = QVBoxLayout(self)
-
-        # Color swatches with labels.
-        swatch_row = QHBoxLayout()
-        swatch_row.addWidget(QLabel("Foreground:"))
-        swatch_row.addWidget(self._make_swatch(self._fg))
-        swatch_row.addWidget(QLabel(self._hex_label(self._fg)))
-        swatch_row.addSpacing(20)
-        swatch_row.addWidget(QLabel("Background:"))
-        swatch_row.addWidget(self._make_swatch(self._bg))
-        swatch_row.addWidget(QLabel(self._hex_label(self._bg)))
-        swatch_row.addStretch(1)
-        layout.addLayout(swatch_row)
-
-        # Direction.
-        layout.addWidget(QLabel("Direction:"))
-        self._dir_fg_to_bg = QRadioButton("Replace Foreground with Background")
-        self._dir_bg_to_fg = QRadioButton("Replace Background with Foreground")
-        self._dir_fg_to_bg.setChecked(True)
-        self._dir_group = QButtonGroup(self)
-        self._dir_group.addButton(self._dir_fg_to_bg)
-        self._dir_group.addButton(self._dir_bg_to_fg)
-        layout.addWidget(self._dir_fg_to_bg)
-        layout.addWidget(self._dir_bg_to_fg)
-
-        # Scope.
-        layout.addWidget(QLabel("Apply to:"))
-        self._scope_active = QRadioButton("Active layer + frame")
-        self._scope_frame = QRadioButton("All layers in current frame")
-        self._scope_all = QRadioButton("All layers in all frames")
-        self._scope_active.setChecked(True)
-        self._scope_group = QButtonGroup(self)
-        self._scope_group.addButton(self._scope_active)
-        self._scope_group.addButton(self._scope_frame)
-        self._scope_group.addButton(self._scope_all)
-        layout.addWidget(self._scope_active)
-        if sprite.layer_count > 1:
-            layout.addWidget(self._scope_frame)
-        if sprite.frame_count > 1:
-            layout.addWidget(self._scope_all)
-
-        # Tolerance.
-        tol_row = QHBoxLayout()
-        tol_row.addWidget(QLabel("Tolerance:"))
-        self._tol_spin = QDoubleSpinBox()
-        self._tol_spin.setRange(0.0, 510.0)
-        self._tol_spin.setDecimals(1)
-        self._tol_spin.setSingleStep(1.0)
-        self._tol_spin.setValue(0.0)
-        tol_row.addWidget(self._tol_spin)
-        tol_row.addStretch(1)
-        layout.addLayout(tol_row)
-
-        # Buttons.
-        buttons = QDialogButtonBox(
-            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
-        )
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-
-    @staticmethod
-    def _make_swatch(color: tuple) -> QFrame:
-        sw = QFrame()
-        sw.setFixedSize(28, 20)
-        sw.setFrameShape(QFrame.Shape.Box)
-        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
-        sw.setStyleSheet(
-            f"background-color: rgba({r}, {g}, {b}, {a}); border: 1px solid #444;"
-        )
-        return sw
-
-    @staticmethod
-    def _hex_label(color: tuple) -> str:
-        r, g, b, a = (list(color) + [255, 255, 255, 255])[:4]
-        return f"#{r:02X}{g:02X}{b:02X} (a={a})"
-
-    def color_pair(self) -> tuple:
-        """Return ``(old_color, new_color)`` based on the chosen direction."""
-        if self._dir_fg_to_bg.isChecked():
-            return self._fg, self._bg
-        return self._bg, self._fg
-
-    def tolerance(self) -> float:
-        return float(self._tol_spin.value())
-
-    def scope(self) -> str:
-        if self._scope_all.isChecked():
-            return "all"
-        if self._scope_frame.isChecked():
-            return "frame"
-        return "active"
